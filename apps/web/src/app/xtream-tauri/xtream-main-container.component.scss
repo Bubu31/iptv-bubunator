@@ -20,6 +20,20 @@
     }
 }
 
+.category-search {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+
+    mat-form-field {
+        width: 100%;
+        @include mat.form-field-density(-5);
+
+        .mat-mdc-form-field-subscript-wrapper {
+            display: none;
+        }
+    }
+}
+
 .main-content {
     flex: 1;
     display: flex;

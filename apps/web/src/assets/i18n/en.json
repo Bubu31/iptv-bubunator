@@ -366,7 +366,8 @@
             "SEARCH_PLACEHOLDER": "Search categories...",
             "NO_RESULTS": "No matching categories found",
             "NO_CATEGORIES": "No categories available",
-            "SAVE": "Save"
+            "SAVE": "Save",
+            "APPLY_FILTER": "Apply category filter"
         }
     },
     "PORTALS": {

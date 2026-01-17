@@ -1,8 +1,11 @@
 import {
     ChangeDetectionStrategy,
     Component,
+    computed,
+    HostListener,
     inject,
     OnInit,
+    signal,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatIconButton } from '@angular/material/button';
@@ -11,6 +14,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIcon } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatListModule } from '@angular/material/list';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { ActivatedRoute } from '@angular/router';
 import { TranslatePipe } from '@ngx-translate/core';
@@ -40,6 +44,7 @@ import { XtreamStore } from '../stores/xtream.store';
         MatIconButton,
         MatInputModule,
         MatListModule,
+        MatSlideToggleModule,
         MatTooltipModule,
         /* MpvPlayerBarComponent, */
         PlaylistSwitcherComponent,
@@ -57,6 +62,7 @@ export class LiveStreamLayoutComponent implements OnInit {
     private readonly route = inject(ActivatedRoute);
 
     readonly categories = this.xtreamStore.getCategoriesBySelectedType;
+    readonly categoryFilterEnabled = this.xtreamStore.categoryFilterEnabled;
     readonly categoryItemCounts = this.xtreamStore.getCategoryItemCounts;
     readonly currentPlaylist = this.xtreamStore.currentPlaylist;
     readonly epgItems = this.xtreamStore.epgItems;
@@ -65,6 +71,33 @@ export class LiveStreamLayoutComponent implements OnInit {
     readonly player = this.settingsStore.player;
     streamUrl: string;
     favorites = new Map<number, boolean>();
+
+    // Category search
+    readonly categorySearchTerm = signal('');
+    readonly filteredCategories = computed(() => {
+        const categories = this.categories();
+        const searchTerm = this.categorySearchTerm().toLowerCase().trim();
+        if (!searchTerm) {
+            return categories;
+        }
+        return categories.filter((cat: any) =>
+            (cat.name || cat.category_name || '').toLowerCase().includes(searchTerm)
+        );
+    });
+
+    // CUSTOM: Theater mode - video takes full app space
+    readonly isTheaterMode = signal(false);
+
+    @HostListener('document:keydown.escape')
+    onEscapeKey() {
+        if (this.isTheaterMode()) {
+            this.isTheaterMode.set(false);
+        }
+    }
+
+    toggleTheaterMode() {
+        this.isTheaterMode.update((v) => !v);
+    }
 
     ngOnInit() {
         const playlist = this.xtreamStore.currentPlaylist();
@@ -129,5 +162,13 @@ export class LiveStreamLayoutComponent implements OnInit {
                 this.xtreamStore.reloadCategories();
             }
         });
+    }
+
+    async onCategoryFilterToggle(enabled: boolean): Promise<void> {
+        this.xtreamStore.setCategoryFilterEnabled(enabled);
+        if (!enabled) {
+            // Load all categories when filter is disabled
+            await this.xtreamStore.fetchAllCategoriesUnfiltered();
+        }
     }
 }

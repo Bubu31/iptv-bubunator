@@ -1,7 +1,8 @@
 @let isEmbeddedPlayer =
     player() === 'videojs' || player() === 'html5' || player() === 'artplayer';
 
-<div class="sidebar">
+<!-- CUSTOM: Theater mode class on sidebar -->
+<div class="sidebar" [class.theater-mode-hidden]="isTheaterMode()">
     <div class="sidebar-header">
         @if (selectedCategoryId()) {
             <button mat-icon-button (click)="backToCategories()">
@@ -14,6 +15,12 @@
                 [currentTitle]="currentPlaylist()?.name || currentPlaylist()?.title || 'Playlist'"
                 [subtitle]="'Xtream Code'"
             />
+            <mat-slide-toggle
+                class="category-filter-toggle"
+                [checked]="categoryFilterEnabled()"
+                (change)="onCategoryFilterToggle($event.checked)"
+                [matTooltip]="'XTREAM.CATEGORY_MANAGEMENT.APPLY_FILTER' | translate"
+            ></mat-slide-toggle>
             <button
                 mat-icon-button
                 class="manage-categories-btn"
@@ -27,8 +34,25 @@
     @if (selectedCategoryId()) {
         <app-portal-channels-list (playClicked)="playLive($event)" />
     } @else {
+        <div class="category-search">
+            <mat-form-field appearance="outline" subscriptSizing="dynamic">
+                <mat-icon matPrefix>search</mat-icon>
+                <input
+                    matInput
+                    type="text"
+                    [placeholder]="'XTREAM.CATEGORY_MANAGEMENT.SEARCH_PLACEHOLDER' | translate"
+                    [ngModel]="categorySearchTerm()"
+                    (ngModelChange)="categorySearchTerm.set($event)"
+                />
+                @if (categorySearchTerm()) {
+                    <button matSuffix mat-icon-button (click)="categorySearchTerm.set('')">
+                        <mat-icon>close</mat-icon>
+                    </button>
+                }
+            </mat-form-field>
+        </div>
         <app-category-view
-            [items]="categories()"
+            [items]="filteredCategories()"
             [itemCounts]="categoryItemCounts()"
             (categoryClicked)="selectCategory($event)"
             [showCounts]="true"
@@ -38,11 +62,22 @@
 <div class="content-container">
     @if (streamUrl) {
         @if (isEmbeddedPlayer) {
-            <div class="video-player">
+            <!-- CUSTOM: Theater mode class on video player -->
+            <div class="video-player" [class.theater-mode-fullscreen]="isTheaterMode()">
                 <app-web-player-view [streamUrl]="streamUrl" />
+                <!-- CUSTOM: Theater mode toggle button -->
+                <button
+                    class="theater-mode-btn"
+                    mat-icon-button
+                    (click)="toggleTheaterMode()"
+                    [matTooltip]="isTheaterMode() ? 'Exit theater mode (Esc)' : 'Theater mode'"
+                >
+                    <mat-icon>{{ isTheaterMode() ? 'fullscreen_exit' : 'fullscreen' }}</mat-icon>
+                </button>
             </div>
         }
-        <div class="epg">
+        <!-- CUSTOM: Theater mode class on EPG -->
+        <div class="epg" [class.theater-mode-hidden]="isTheaterMode()">
             <div class="epg-content">
                 @if (epgItems().length > 0) {
                     <app-epg-view [epgItems]="epgItems()" />

@@ -26,6 +26,9 @@ export interface ContentState {
     liveCategories: (XtreamCategory | XtreamCategoryFromDb)[];
     vodCategories: (XtreamCategory | XtreamCategoryFromDb)[];
     serialCategories: (XtreamCategory | XtreamCategoryFromDb)[];
+    allLiveCategories: XtreamCategoryFromDb[];
+    allVodCategories: XtreamCategoryFromDb[];
+    allSerialCategories: XtreamCategoryFromDb[];
     liveStreams: XtreamLiveStream[];
     vodStreams: XtreamVodStream[];
     serialStreams: XtreamSerieItem[];
@@ -43,6 +46,9 @@ const initialContentState: ContentState = {
     liveCategories: [],
     vodCategories: [],
     serialCategories: [],
+    allLiveCategories: [],
+    allVodCategories: [],
+    allSerialCategories: [],
     liveStreams: [],
     vodStreams: [],
     serialStreams: [],
@@ -319,6 +325,30 @@ export function withContent() {
                         });
                     } catch (error) {
                         console.error('Error reloading categories:', error);
+                    }
+                },
+
+                /**
+                 * Fetch all categories including hidden ones (for unfiltered view)
+                 */
+                async fetchAllCategoriesUnfiltered(): Promise<void> {
+                    const ctx = getCredentialsFromStore();
+                    if (!ctx) return;
+
+                    try {
+                        const [allLive, allVod, allSeries] = await Promise.all([
+                            dataSource.getAllCategories(ctx.playlistId, 'live'),
+                            dataSource.getAllCategories(ctx.playlistId, 'movies'),
+                            dataSource.getAllCategories(ctx.playlistId, 'series'),
+                        ]);
+
+                        patchState(store, {
+                            allLiveCategories: allLive,
+                            allVodCategories: allVod,
+                            allSerialCategories: allSeries,
+                        });
+                    } catch (error) {
+                        console.error('Error fetching all categories:', error);
                     }
                 },
 

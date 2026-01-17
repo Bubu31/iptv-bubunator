@@ -18,6 +18,7 @@ export interface SelectionState {
     page: number;
     limit: number;
     isLoadingDetails: boolean;
+    categoryFilterEnabled: boolean;
 }
 
 /**
@@ -30,6 +31,7 @@ const initialSelectionState: SelectionState = {
     page: 0,
     limit: Number(localStorage.getItem('xtream-page-size') ?? 25),
     isLoadingDetails: false,
+    categoryFilterEnabled: true,
 };
 
 /**
@@ -249,17 +251,30 @@ export function withSelection() {
 
                 /**
                  * Get categories for the currently selected content type
+                 * Returns filtered categories when filter is enabled, all categories otherwise
                  */
                 getCategoriesBySelectedType: computed(() => {
                     const type = store.selectedContentType();
+                    const filterEnabled = store.categoryFilterEnabled();
 
                     // Access parent store categories (from withContent)
                     const storeAny = store as any;
-                    return type === 'live'
-                        ? storeAny.liveCategories?.() || []
-                        : type === 'vod'
-                          ? storeAny.vodCategories?.() || []
-                          : storeAny.serialCategories?.() || [];
+
+                    if (filterEnabled) {
+                        // Return only visible categories
+                        return type === 'live'
+                            ? storeAny.liveCategories?.() || []
+                            : type === 'vod'
+                              ? storeAny.vodCategories?.() || []
+                              : storeAny.serialCategories?.() || [];
+                    } else {
+                        // Return all categories including hidden
+                        return type === 'live'
+                            ? storeAny.allLiveCategories?.() || []
+                            : type === 'vod'
+                              ? storeAny.allVodCategories?.() || []
+                              : storeAny.allSerialCategories?.() || [];
+                    }
                 }),
             };
         }),
@@ -326,6 +341,21 @@ export function withSelection() {
                         localStorage.getItem('xtream-page-size') ?? 25
                     ),
                 });
+            },
+
+            /**
+             * Toggle category filter (show/hide hidden categories)
+             */
+            toggleCategoryFilter(): void {
+                const newValue = !store.categoryFilterEnabled();
+                patchState(store, { categoryFilterEnabled: newValue });
+            },
+
+            /**
+             * Set category filter enabled state
+             */
+            setCategoryFilterEnabled(enabled: boolean): void {
+                patchState(store, { categoryFilterEnabled: enabled });
             },
         }))
     );

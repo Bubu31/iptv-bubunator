@@ -289,7 +289,19 @@
         "YEAR": "Année",
         "AGE": "Âge",
         "YOUTUBE_TRAILER": "Bande-annonce YouTube",
-        "EPISODE": "Épisode"
+        "EPISODE": "Épisode",
+        "CATEGORY_MANAGEMENT": {
+            "TITLE": "Gérer les catégories",
+            "LOADING": "Chargement des catégories...",
+            "SELECTED": "Sélectionnées",
+            "SELECT_ALL": "Tout sélectionner",
+            "DESELECT_ALL": "Tout désélectionner",
+            "SEARCH_PLACEHOLDER": "Rechercher des catégories...",
+            "NO_RESULTS": "Aucune catégorie correspondante",
+            "NO_CATEGORIES": "Aucune catégorie disponible",
+            "SAVE": "Enregistrer",
+            "APPLY_FILTER": "Appliquer le filtre de catégories"
+        }
     },
     "PORTALS": {
         "ALL_CATEGORIES": "Toutes les catégories",

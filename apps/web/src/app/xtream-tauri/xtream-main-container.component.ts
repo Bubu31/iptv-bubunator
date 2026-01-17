@@ -1,7 +1,11 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, computed, inject, OnInit, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { MatIconButton } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
+import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIcon } from '@angular/material/icon';
+import { MatInputModule } from '@angular/material/input';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { ActivatedRoute, Router, RouterOutlet } from '@angular/router';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
@@ -20,8 +24,12 @@ import { XtreamStore } from './stores/xtream.store';
     styleUrls: ['./xtream-main-container.component.scss', './sidebar.scss'],
     imports: [
         CategoryViewComponent,
+        FormsModule,
+        MatFormFieldModule,
         MatIcon,
         MatIconButton,
+        MatInputModule,
+        MatSlideToggleModule,
         MatTooltipModule,
         PlaylistSwitcherComponent,
         RouterOutlet,
@@ -36,9 +44,23 @@ export class XtreamMainContainerComponent implements OnInit {
     private readonly dialog = inject(MatDialog);
 
     readonly categories = this.xtreamStore.getCategoriesBySelectedType;
+    readonly categoryFilterEnabled = this.xtreamStore.categoryFilterEnabled;
     readonly categoryItemCounts = this.xtreamStore.getCategoryItemCounts;
     readonly currentPlaylist = this.xtreamStore.currentPlaylist;
     readonly selectedCategoryId = this.xtreamStore.selectedCategoryId;
+
+    // Category search
+    readonly categorySearchTerm = signal('');
+    readonly filteredCategories = computed(() => {
+        const categories = this.categories();
+        const searchTerm = this.categorySearchTerm().toLowerCase().trim();
+        if (!searchTerm) {
+            return categories;
+        }
+        return categories.filter((cat: any) =>
+            (cat.name || cat.category_name || '').toLowerCase().includes(searchTerm)
+        );
+    });
 
     ngOnInit(): void {
         const { categoryId } = this.route.snapshot.params;
@@ -130,5 +152,13 @@ export class XtreamMainContainerComponent implements OnInit {
                 this.xtreamStore.reloadCategories();
             }
         });
+    }
+
+    async onCategoryFilterToggle(enabled: boolean): Promise<void> {
+        this.xtreamStore.setCategoryFilterEnabled(enabled);
+        if (!enabled) {
+            // Load all categories when filter is disabled
+            await this.xtreamStore.fetchAllCategoriesUnfiltered();
+        }
     }
 }

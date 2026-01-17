@@ -28,8 +28,14 @@
             min-width: 0;
         }
 
+        .category-filter-toggle {
+            flex-shrink: 0;
+            app-region: no-drag;
+            transform: scale(0.8);
+        }
+
         .manage-categories-btn {
-            margin-left: auto;
+            flex-shrink: 0;
         }
     }
 }

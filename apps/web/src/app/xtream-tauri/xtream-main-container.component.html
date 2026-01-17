@@ -5,6 +5,12 @@
             [currentTitle]="currentPlaylist()?.name || currentPlaylist()?.title || 'Playlist'"
             [subtitle]="'Xtream Code'"
         />
+        <mat-slide-toggle
+            class="category-filter-toggle"
+            [checked]="categoryFilterEnabled()"
+            (change)="onCategoryFilterToggle($event.checked)"
+            [matTooltip]="'XTREAM.CATEGORY_MANAGEMENT.APPLY_FILTER' | translate"
+        ></mat-slide-toggle>
         <button
             mat-icon-button
             class="manage-categories-btn"
@@ -14,8 +20,25 @@
             <mat-icon>tune</mat-icon>
         </button>
     </div>
+    <div class="category-search">
+        <mat-form-field appearance="outline" subscriptSizing="dynamic">
+            <mat-icon matPrefix>search</mat-icon>
+            <input
+                matInput
+                type="text"
+                [placeholder]="'XTREAM.CATEGORY_MANAGEMENT.SEARCH_PLACEHOLDER' | translate"
+                [ngModel]="categorySearchTerm()"
+                (ngModelChange)="categorySearchTerm.set($event)"
+            />
+            @if (categorySearchTerm()) {
+                <button matSuffix mat-icon-button (click)="categorySearchTerm.set('')">
+                    <mat-icon>close</mat-icon>
+                </button>
+            }
+        </mat-form-field>
+    </div>
     <app-category-view
-        [items]="categories()"
+        [items]="filteredCategories()"
         [selectedCategoryId]="selectedCategoryId()"
         [itemCounts]="categoryItemCounts()"
         (categoryClicked)="categoryClicked($event)"
