@@ -1,46 +1,58 @@
 import { app, dialog, MessageBoxOptions, BrowserWindow } from 'electron';
-import { autoUpdater, UpdateInfo } from 'electron-updater';
 import App from '../app';
+
+// Dynamic import to avoid issues in development mode
+let autoUpdater: typeof import('electron-updater').autoUpdater | null = null;
 
 export default class UpdateEvents {
     private static updateAvailable = false;
 
     // initialize auto update service - must be invoked only in production
-    static initAutoUpdateService() {
+    static async initAutoUpdateService() {
         if (App.isDevelopmentMode()) {
             console.log('Skipping auto-updater in development mode');
             return;
         }
 
-        console.log('Initializing auto update service...\n');
+        try {
+            // Dynamic import of electron-updater
+            const electronUpdater = await import('electron-updater');
+            autoUpdater = electronUpdater.autoUpdater;
 
-        // Configure auto-updater
-        autoUpdater.autoDownload = true;
-        autoUpdater.autoInstallOnAppQuit = true;
+            console.log('Initializing auto update service...\n');
 
-        // Set up event handlers
-        UpdateEvents.setupEventHandlers();
+            // Configure auto-updater
+            autoUpdater.autoDownload = true;
+            autoUpdater.autoInstallOnAppQuit = true;
 
-        // Check for updates
-        UpdateEvents.checkForUpdates();
+            // Set up event handlers
+            UpdateEvents.setupEventHandlers();
 
-        // Check for updates periodically (every 4 hours)
-        setInterval(() => {
+            // Check for updates
             UpdateEvents.checkForUpdates();
-        }, 4 * 60 * 60 * 1000);
+
+            // Check for updates periodically (every 4 hours)
+            setInterval(() => {
+                UpdateEvents.checkForUpdates();
+            }, 4 * 60 * 60 * 1000);
+        } catch (err) {
+            console.error('Failed to initialize auto-updater:', err);
+        }
     }
 
     private static setupEventHandlers() {
+        if (!autoUpdater) return;
+
         autoUpdater.on('checking-for-update', () => {
             console.log('Checking for updates...\n');
         });
 
-        autoUpdater.on('update-available', (info: UpdateInfo) => {
+        autoUpdater.on('update-available', (info) => {
             console.log(`Update available: v${info.version}\n`);
             UpdateEvents.updateAvailable = true;
         });
 
-        autoUpdater.on('update-not-available', (info: UpdateInfo) => {
+        autoUpdater.on('update-not-available', (info) => {
             console.log(`Current version ${app.getVersion()} is up to date\n`);
         });
 
@@ -55,7 +67,7 @@ export default class UpdateEvents {
             }
         });
 
-        autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
+        autoUpdater.on('update-downloaded', (info) => {
             console.log(`Update downloaded: v${info.version}\n`);
             UpdateEvents.showUpdateDialog(info);
         });
@@ -65,7 +77,7 @@ export default class UpdateEvents {
         });
     }
 
-    private static showUpdateDialog(info: UpdateInfo) {
+    private static showUpdateDialog(info: { version: string }) {
         const dialogOpts: MessageBoxOptions = {
             type: 'info',
             buttons: ['Restart Now', 'Later'],
@@ -75,7 +87,7 @@ export default class UpdateEvents {
         };
 
         dialog.showMessageBox(dialogOpts).then((returnValue) => {
-            if (returnValue.response === 0) {
+            if (returnValue.response === 0 && autoUpdater) {
                 autoUpdater.quitAndInstall(false, true);
             }
         });
@@ -83,7 +95,7 @@ export default class UpdateEvents {
 
     // Check for updates - must be invoked after initAutoUpdateService() and only in production
     static checkForUpdates() {
-        if (!App.isDevelopmentMode()) {
+        if (!App.isDevelopmentMode() && autoUpdater) {
             autoUpdater.checkForUpdates().catch((err) => {
                 console.error('Failed to check for updates:', err.message);
             });
@@ -92,7 +104,7 @@ export default class UpdateEvents {
 
     // Manual update check triggered by user
     static async manualCheckForUpdates(): Promise<{ updateAvailable: boolean; version?: string }> {
-        if (App.isDevelopmentMode()) {
+        if (App.isDevelopmentMode() || !autoUpdater) {
             return { updateAvailable: false };
         }
 
