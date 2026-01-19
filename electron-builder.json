@@ -62,10 +62,6 @@
             {
                 "target": "pacman",
                 "arch": ["x64"]
-            },
-            {
-                "target": "flatpak",
-                "arch": ["x64"]
             }
         ],
         "artifactName": "${name}-${version}-${os}-${arch}.${ext}",
@@ -89,7 +85,7 @@
             }
         ],
         "artifactName": "${name}-${version}-windows-${arch}-setup.${ext}",
-        "icon": "apps/web/src/assets/icons/favicon.ico",
+        "icon": "apps/web/src/assets/icons/favicon.256x256.png",
         "signAndEditExecutable": false
     },
     "nsis": {
