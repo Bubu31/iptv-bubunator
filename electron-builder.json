@@ -6,6 +6,12 @@
         "buildResources": "dist/apps",
         "output": "dist/executables"
     },
+    "publish": {
+        "provider": "github",
+        "owner": "4gray",
+        "repo": "iptvnator",
+        "releaseType": "release"
+    },
     "files": [
         {
             "from": "dist/apps/remote-control-web",
@@ -83,9 +89,17 @@
             }
         ],
         "artifactName": "${name}-${version}-windows-${arch}-setup.${ext}",
-        "icon": "apps/web/src/assets/icons/icon.png"
+        "icon": "apps/web/src/assets/icons/favicon.ico",
+        "signAndEditExecutable": false
     },
     "nsis": {
-        "artifactName": "${name}-${version}-windows-${arch}-setup.${ext}"
+        "artifactName": "${name}-${version}-windows-${arch}-setup.${ext}",
+        "oneClick": false,
+        "perMachine": false,
+        "allowToChangeInstallationDirectory": true,
+        "deleteAppDataOnUninstall": false,
+        "createDesktopShortcut": true,
+        "createStartMenuShortcut": true,
+        "shortcutName": "IPTVnator"
     }
 }

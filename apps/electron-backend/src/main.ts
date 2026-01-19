@@ -12,6 +12,7 @@ import SettingsEvents from './app/events/settings.events';
 import SharedEvents from './app/events/shared.events';
 import SquirrelEvents from './app/events/squirrel.events';
 import StalkerEvents from './app/events/stalker.events';
+import UpdateEvents from './app/events/update.events';
 import XtreamEvents from './app/events/xtream.events';
 
 app.setName('iptvnator');
@@ -45,7 +46,7 @@ export default class Main {
 
         // initialize auto updater service
         if (!App.isDevelopmentMode()) {
-            // UpdateEvents.initAutoUpdateService();
+            UpdateEvents.initAutoUpdateService();
         }
     }
 }
