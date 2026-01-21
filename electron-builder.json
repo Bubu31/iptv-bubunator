@@ -65,7 +65,7 @@
             }
         ],
         "artifactName": "${name}-${version}-windows-${arch}-setup.${ext}",
-        "icon": "apps/web/src/assets/icons/favicon.256x256.png",
+        "icon": "apps/web/src/assets/icons/generated/icons/icon.ico",
         "signAndEditExecutable": false
     },
     "nsis": {
