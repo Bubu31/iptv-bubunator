@@ -39,7 +39,8 @@
                         }
                     ]
                 }
-            }
+            },
+            "defaultConfiguration": "production"
         },
         "serve": {
             "executor": "nx:run-commands",
@@ -68,7 +69,7 @@
             }
         },
         "make": {
-            "dependsOn": ["electron-backend:build"],
+            "dependsOn": ["electron-backend:build:production"],
             "executor": "nx-electron:make",
             "options": {
                 "name": "electron-backend",

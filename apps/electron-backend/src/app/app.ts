@@ -160,9 +160,8 @@ export default class App {
             App.mainWindow.loadURL(`http://localhost:${rendererAppPort}`);
             App.mainWindow.webContents.openDevTools();
         } else {
-            App.mainWindow.loadFile(
-                join(__dirname, '..', rendererAppName, 'index.html')
-            );
+            const indexPath = join(__dirname, '..', rendererAppName, 'index.html');
+            App.mainWindow.loadFile(indexPath);
         }
     }
 
