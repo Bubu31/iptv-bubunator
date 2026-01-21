@@ -118,6 +118,12 @@ export class LiveStreamLayoutComponent implements OnInit {
     }
 
     playLive(item: any) {
+        // Add to recently viewed
+        this.xtreamStore.addRecentItem({
+            contentId: item.stream_id,
+            playlist: this.xtreamStore.currentPlaylist,
+        });
+
         const streamUrl = this.xtreamStore.constructStreamUrl(item);
         this.streamUrl = streamUrl;
         const isEmbeddedPlayer =

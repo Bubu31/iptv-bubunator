@@ -10,7 +10,7 @@ export const xtreamRoutes: Route[] = [
         children: [
             {
                 path: '',
-                redirectTo: 'vod',
+                redirectTo: 'live',
                 pathMatch: 'full',
             },
             {
