@@ -9,7 +9,7 @@ import {
     provideZoneChangeDetection,
 } from '@angular/core';
 import { provideAnimations } from '@angular/platform-browser/animations';
-import { provideRouter } from '@angular/router';
+import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideServiceWorker } from '@angular/service-worker';
 import { provideEffects } from '@ngrx/effects';
 import { provideRouterStore, routerReducer } from '@ngrx/router-store';
@@ -20,13 +20,26 @@ import { TranslateHttpLoader } from '@ngx-translate/http-loader';
 import { PlaylistEffects, playlistReducer } from 'm3u-state';
 import { NgxIndexedDBModule, NgxIndexedDBService } from 'ngx-indexed-db';
 import { NgxSkeletonLoaderModule } from 'ngx-skeleton-loader';
+import {
+    PORTAL_EXTERNAL_PLAYBACK,
+    PORTAL_PLAYER,
+} from '@iptvnator/portal/shared/util';
+import { PLAYLIST_PLAYER_ACTIONS } from '@iptvnator/playlist/shared/util';
+import { provideXtreamDataSource } from '@iptvnator/portal/xtream/data-access';
 import { DataService } from 'services';
 import { dbConfig } from 'shared-interfaces';
 import { AppConfig } from '../environments/environment';
 import { routes } from './app.routes';
 import { ElectronService } from './services/electron.service';
+import { ExternalPlaybackService } from './services/external-playback.service';
+import { PlayerService } from './services/player.service';
+import {
+    AppPortalNavigationActionsService,
+    providePortalNavigationActions,
+} from './services/portal-navigation-actions.service';
+import { providePortalPlaybackPositions } from './services/portal-playback-positions.service';
 import { PwaService } from './services/pwa.service';
-import { provideXtreamDataSource } from './xtream-tauri/data-sources';
+import { provideWorkspaceShellActions } from './services/workspace-shell-actions.service';
 
 // AoT requires an exported function for factories
 export function HttpLoaderFactory(http: HttpClient): TranslateHttpLoader {
@@ -46,7 +59,7 @@ export function DataFactory() {
 export const appConfig: ApplicationConfig = {
     providers: [
         provideZoneChangeDetection({ eventCoalescing: true }),
-        provideRouter(routes),
+        provideRouter(routes, withComponentInputBinding()),
         provideAnimations(),
         provideHttpClient(withInterceptorsFromDi()),
         provideStore({
@@ -85,6 +98,21 @@ export const appConfig: ApplicationConfig = {
             useFactory: DataFactory,
             deps: [NgxIndexedDBService, HttpClient],
         },
+        {
+            provide: PORTAL_PLAYER,
+            useExisting: PlayerService,
+        },
+        {
+            provide: PORTAL_EXTERNAL_PLAYBACK,
+            useExisting: ExternalPlaybackService,
+        },
+        ...providePortalPlaybackPositions(),
+        ...providePortalNavigationActions(),
+        {
+            provide: PLAYLIST_PLAYER_ACTIONS,
+            useExisting: AppPortalNavigationActionsService,
+        },
+        ...provideWorkspaceShellActions(),
         ...provideXtreamDataSource(),
     ],
 };

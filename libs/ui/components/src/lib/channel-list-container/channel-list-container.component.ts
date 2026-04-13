@@ -1,91 +1,160 @@
+import { CommonModule } from '@angular/common';
 import {
-    CdkDragDrop,
-    DragDropModule,
-    moveItemInArray,
-} from '@angular/cdk/drag-drop';
-import { ScrollingModule } from '@angular/cdk/scrolling';
-import { CommonModule, KeyValue, TitleCasePipe } from '@angular/common';
-import {
+    ChangeDetectionStrategy,
     Component,
-    ElementRef,
-    HostListener,
+    computed,
     inject,
     Input,
+    input,
     OnDestroy,
     OnInit,
-    viewChild,
+    output,
+    signal,
 } from '@angular/core';
-import { FormsModule } from '@angular/forms';
-import { MatDividerModule } from '@angular/material/divider';
-import { MatExpansionModule } from '@angular/material/expansion';
-import { MatFormFieldModule } from '@angular/material/form-field';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { MatInputModule } from '@angular/material/input';
-import { MatSnackBar } from '@angular/material/snack-bar';
-import { MatTabsModule } from '@angular/material/tabs';
-import { FilterPipe } from '@iptvnator/pipes';
+import { ActivatedRoute, NavigationEnd, Router } from '@angular/router';
 import { Store } from '@ngrx/store';
 import { StorageMap } from '@ngx-pwa/local-storage';
-import { TranslatePipe, TranslateService } from '@ngx-translate/core';
-import * as _ from 'lodash';
-import { ChannelActions, FavoritesActions } from 'm3u-state';
+import { TranslatePipe } from '@ngx-translate/core';
+import { EpgService } from '@iptvnator/epg/data-access';
+import { PlaylistContextFacade } from '@iptvnator/playlist/shared/util';
 import {
+    isWorkspaceLayoutRoute,
+    queryParamSignal,
+} from '@iptvnator/portal/shared/util';
+import {
+    ChannelActions,
+    FavoritesActions,
+    PlaylistActions,
     selectActive,
-    selectActivePlaylistId,
     selectFavorites,
 } from 'm3u-state';
-import { BehaviorSubject, combineLatest, map, skipWhile } from 'rxjs';
-import { EpgService } from 'services';
-import { Channel, EpgProgram, Settings, STORE_KEY } from 'shared-interfaces';
-import { ChannelListItemComponent } from './channel-list-item/channel-list-item.component';
+import {
+    BehaviorSubject,
+    combineLatest,
+    filter,
+    firstValueFrom,
+    map,
+} from 'rxjs';
+import { PlaylistsService } from 'services';
+import {
+    Channel,
+    EpgProgram,
+    isM3uRecentlyViewedItem,
+    normalizeStalkerDate,
+    PlaylistMeta,
+    PlaylistRecentlyViewedItem,
+    Settings,
+    STORE_KEY,
+} from 'shared-interfaces';
+import { AllChannelsViewComponent } from './all-channels-view/all-channels-view.component';
+import { FavoritesViewComponent } from './favorites-view/favorites-view.component';
+import { GroupsViewComponent } from './groups-view/groups-view.component';
+import {
+    RecentViewComponent,
+    RecentViewItem,
+} from './recent-view/recent-view.component';
+import { ChannelListLoadingStateComponent } from '../channel-list-loading-state/channel-list-loading-state.component';
+
+function groupChannelsByTitle(channels: Channel[]): Record<string, Channel[]> {
+    return channels.reduce<Record<string, Channel[]>>((groups, channel) => {
+        const key = channel.group?.title ?? '';
+        if (!groups[key]) {
+            groups[key] = [];
+        }
+        groups[key].push(channel);
+        return groups;
+    }, {});
+}
 
 @Component({
     selector: 'app-channel-list-container',
     templateUrl: './channel-list-container.component.html',
     styleUrls: ['./channel-list-container.component.scss'],
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [
-        ChannelListItemComponent,
+        AllChannelsViewComponent,
+        ChannelListLoadingStateComponent,
         CommonModule,
-        DragDropModule,
-        FilterPipe,
-        FormsModule,
-        MatDividerModule,
-        MatExpansionModule,
-        MatFormFieldModule,
+        FavoritesViewComponent,
+        GroupsViewComponent,
+        MatButtonModule,
         MatIconModule,
-        MatInputModule,
-        MatTabsModule,
-        ScrollingModule,
-        TitleCasePipe,
+        RecentViewComponent,
         TranslatePipe,
     ],
 })
 export class ChannelListContainerComponent implements OnInit, OnDestroy {
     private readonly epgService = inject(EpgService);
-    private readonly snackBar = inject(MatSnackBar);
+    private readonly playlistsService = inject(PlaylistsService);
     private readonly storage = inject(StorageMap);
     private readonly store = inject(Store);
-    private readonly translateService = inject(TranslateService);
+    private readonly router = inject(Router);
+    private readonly route = inject(ActivatedRoute);
+    private readonly playlistContext = inject(PlaylistContextFacade);
 
     /** Map of channel ID to current EPG program */
-    channelEpgMap = new Map<string, EpgProgram | null>();
+    readonly channelEpgMap = signal(new Map<string, EpgProgram | null>());
 
     /** Interval for refreshing EPG data */
     private epgRefreshInterval?: number;
 
-    /** Whether to show EPG data in channel items (false in PWA mode or when EPG is not configured) */
-    shouldShowEpg = false;
+    /** Global progress tick signal - triggers re-computation of progress percentages */
+    readonly progressTick = signal(0);
+
+    /** Interval for global progress updates */
+    private progressInterval?: number;
+
+    /** Whether to show EPG data in channel items */
+    readonly shouldShowEpg = signal(false);
 
     /** Item size for virtual scroll - compact when no EPG */
-    get itemSize(): number {
-        return this.shouldShowEpg ? 68 : 48;
-    }
+    readonly itemSize = computed(() => (this.shouldShowEpg() ? 68 : 48));
 
-    /**
-     * Channels array
-     * Create local copy of the store for local manipulations without updates in the store
-     */
+    /** Active view (all, groups, favorites, recent) */
+    readonly activeView = input<string>('all');
+    readonly channelsLoading = input(false);
+    readonly recentItems = input<PlaylistRecentlyViewedItem[]>([]);
+    readonly sidebarWidth = input<number | null>(null);
+    readonly sidebarWidthRequested = output<number>();
+    readonly sidebarWidthRequestEnded = output<number>();
+    readonly isWorkspaceLayout = isWorkspaceLayoutRoute(this.route);
+    private readonly routeSearchTerm = queryParamSignal(
+        this.route,
+        'q',
+        (value) => (value ?? '').trim().toLowerCase()
+    );
+    readonly workspaceSearchTerm = computed(() =>
+        this.isWorkspaceLayout ? this.routeSearchTerm() : ''
+    );
+
+    readonly currentUrl = toSignal(
+        this.router.events.pipe(
+            filter((event) => event instanceof NavigationEnd),
+            map((event) => (event as NavigationEnd).urlAfterRedirects)
+        ),
+        { initialValue: this.router.url }
+    );
+
+    readonly viewTitle = computed(() => {
+        const view = this.activeView();
+        const url = this.currentUrl();
+        if (view === 'all') return 'CHANNELS.ALL_CHANNELS';
+        if (view === 'groups') return 'CHANNELS.GROUPS';
+        if (view === 'recent') return 'PORTALS.SIDEBAR.RECENT';
+        if (view === 'favorites') {
+            return url.includes('/workspace/global-favorites')
+                ? 'HOME.PLAYLISTS.GLOBAL_FAVORITES'
+                : 'CHANNELS.FAVORITES';
+        }
+        return '';
+    });
+
+    /** Channels array */
     _channelList: Channel[] = [];
+    private readonly channelListSignal = signal<Channel[]>([]);
     private channelList$ = new BehaviorSubject<Channel[]>([]);
 
     get channelList(): Channel[] {
@@ -94,114 +163,105 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
 
     @Input()
     set channelList(value: Channel[]) {
-        this._channelList = value;
-        this.channelList$.next(value); // Emit to observable
-        this.groupedChannels = _.default.groupBy(value, 'group.title');
-        // Fetch EPG for new channel list
-        this.fetchEpgForChannels(value);
+        const safeValue = value ?? [];
+        this._channelList = safeValue;
+        this.channelListSignal.set(safeValue);
+        this.channelList$.next(safeValue);
+        this.fetchEpgForChannels(safeValue);
     }
 
+    /** Route-aware playlist ID for recent-item mutations */
+    private readonly resolvedPlaylistId = this.playlistContext.resolvedPlaylistId;
+    private readonly activePlaylist = this.playlistContext.activePlaylist;
+
+    readonly hiddenGroupTitles = computed(() => {
+        const playlist = this.activePlaylist();
+
+        if (!playlist || playlist.serverUrl || playlist.macAddress) {
+            return [];
+        }
+
+        return playlist.hiddenGroupTitles ?? [];
+    });
+
+    /** Displayed channels - filters out unfavorited channels in global favorites view */
+    readonly displayedChannels = computed(() => {
+        return this.channelListSignal();
+    });
+
     /** Object with channels sorted by groups */
-    groupedChannels!: { [key: string]: Channel[] };
+    readonly groupedChannels = computed(() =>
+        groupChannelsByTitle(this.displayedChannels())
+    );
+
+    readonly recentChannelItems = computed<RecentViewItem[]>(() => {
+        const channels = this.channelListSignal();
+        const recentItems = this.recentItems();
+        const channelsByUrl = new Map(
+            channels.map((channel) => [channel.url, channel] as const)
+        );
+        const channelsById = new Map(
+            channels.map((channel) => [channel.id, channel] as const)
+        );
+        const seenUrls = new Set<string>();
+
+        return [...recentItems]
+            .filter(isM3uRecentlyViewedItem)
+            .sort(
+                (a, b) =>
+                    new Date(normalizeStalkerDate(b.added_at)).getTime() -
+                    new Date(normalizeStalkerDate(a.added_at)).getTime()
+            )
+            .reduce<RecentViewItem[]>((acc, item) => {
+                const channelUrl = item.url?.trim();
+                if (!channelUrl || seenUrls.has(channelUrl)) {
+                    return acc;
+                }
+
+                const channel =
+                    channelsByUrl.get(channelUrl) ||
+                    (item.channel_id
+                        ? channelsById.get(item.channel_id)
+                        : undefined);
+
+                if (!channel) {
+                    return acc;
+                }
+
+                seenUrls.add(channel.url);
+                acc.push({
+                    channel,
+                    viewedAt: normalizeStalkerDate(item.added_at),
+                });
+                return acc;
+            }, []);
+    });
 
     /** Selected channel */
     readonly activeChannel = this.store.selectSignal(selectActive);
 
-    /** Search term for channel filter */
-    searchTerm: { name: string } = {
-        name: '',
-    };
+    /** Active channel URL for highlighting */
+    readonly activeChannelUrl = computed(() => this.activeChannel()?.url);
 
-    /** Search field element */
-    readonly searchElement = viewChild<ElementRef<HTMLInputElement>>('search');
+    /** Set of favorite channel URLs for quick lookup */
+    private readonly _favorites = this.store.selectSignal(selectFavorites);
+    readonly favoriteIds = computed(() => new Set(this._favorites()));
 
-    /** Register ctrl+f as keyboard hotkey to focus the search input field */
-    @HostListener('document:keypress', ['$event'])
-    handleKeyboardEvent(event: KeyboardEvent): void {
-        if (event.key === 'f' && event.ctrlKey) {
-            this.searchElement()?.nativeElement.focus();
-        }
-    }
-
-    /** ID of the current playlist */
-    playlistId$ = this.store
-        .select(selectActivePlaylistId)
-        .pipe(
-            skipWhile(
-                (playlistId) => playlistId === '' || playlistId === undefined
-            )
-        );
-
-    /** List with favorites - combines favorites from store with current channel list */
+    /** List with favorites */
     favorites$ = combineLatest([
         this.store.select(selectFavorites),
         this.channelList$,
     ]).pipe(
         map(([favoriteChannelIds, channelList]) => {
-            console.log(
-                '[ChannelList] favorites$ emit - IDs:',
-                favoriteChannelIds.length,
-                'Channels:',
-                channelList.length
-            );
-            const favorites = favoriteChannelIds
+            return favoriteChannelIds
                 .map((favoriteChannelId) =>
                     channelList.find(
                         (channel) => channel.url === favoriteChannelId
                     )
                 )
-                .filter((channel): channel is Channel => channel !== undefined); // Filter out undefined channels
-            console.log(
-                '[ChannelList] favorites$ result:',
-                favorites.length,
-                'favorites'
-            );
-            return favorites;
+                .filter((channel): channel is Channel => channel !== undefined);
         })
     );
-
-    /**
-     * Sets clicked channel as active and dispatches to store
-     * @param channel selected channel
-     */
-    selectChannel(channel: Channel): void {
-        this.store.dispatch(ChannelActions.setActiveChannel({ channel }));
-
-        // Use tvg-id for EPG matching, fallback to channel name if not available
-        const epgChannelId = channel?.tvg?.id?.trim() || channel?.name.trim();
-
-        if (epgChannelId) {
-            this.epgService.getChannelPrograms(epgChannelId);
-        }
-    }
-
-    /**
-     * Toggles favorite flag for the given channel
-     * @param channel channel to update
-     * @param clickEvent mouse click event
-     */
-    toggleFavoriteChannel(channel: Channel, clickEvent: MouseEvent): void {
-        clickEvent.stopPropagation();
-        this.snackBar.open(
-            this.translateService.instant('CHANNELS.FAVORITES_UPDATED'),
-            undefined,
-            { duration: 2000 }
-        );
-        this.store.dispatch(FavoritesActions.updateFavorites({ channel }));
-    }
-
-    trackByFn(_: number, channel: Channel): string {
-        return channel?.id;
-    }
-
-    drop(event: CdkDragDrop<Channel[]>, favorites: Channel[]) {
-        moveItemInArray(favorites, event.previousIndex, event.currentIndex);
-        this.store.dispatch(
-            FavoritesActions.setFavorites({
-                channelIds: favorites.map((item) => item.url),
-            })
-        );
-    }
 
     ngOnInit(): void {
         // Check if EPG should be shown (only in Electron with configured EPG URL)
@@ -215,28 +275,35 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
                         Object.keys(settings as Settings).length > 0
                     ) {
                         const epgUrl = (settings as Settings).epgUrl;
-                        this.shouldShowEpg = !!(epgUrl && epgUrl.length > 0);
+                        this.shouldShowEpg.set(!!(epgUrl && epgUrl.length > 0));
                     }
                 });
         } else {
-            // PWA mode - don't show EPG
-            this.shouldShowEpg = false;
+            this.shouldShowEpg.set(false);
         }
 
         // Set up EPG refresh interval (every 60 seconds)
         this.epgRefreshInterval = window.setInterval(() => {
             this.fetchEpgForChannels(this._channelList);
         }, 60000);
+
+        // Set up global progress update interval (every 30 seconds)
+        this.progressInterval = window.setInterval(() => {
+            this.progressTick.update((v) => v + 1);
+        }, 30000);
     }
 
-    ngOnDestroy() {
-        this.store.dispatch(ChannelActions.setChannels({ channels: [] }));
+    ngOnDestroy(): void {
+        this.store.dispatch(ChannelActions.resetActiveChannel());
 
         if (this.epgRefreshInterval) {
             clearInterval(this.epgRefreshInterval);
         }
 
-        // Clean up BehaviorSubject
+        if (this.progressInterval) {
+            clearInterval(this.progressInterval);
+        }
+
         this.channelList$.complete();
     }
 
@@ -245,42 +312,109 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
      */
     private fetchEpgForChannels(channels: Channel[]): void {
         if (!channels || channels.length === 0) {
-            console.log('[EPG] No channels to fetch EPG for');
             return;
         }
 
-        // Get channel IDs (prefer tvg-id, fallback to name)
         const channelIds = channels
             .map((channel) => channel?.tvg?.id?.trim() || channel?.name?.trim())
             .filter((id) => !!id);
 
-        // Batch fetch EPG programs
         this.epgService
             .getCurrentProgramsForChannels(channelIds)
             .subscribe((epgMap) => {
-                this.channelEpgMap = epgMap;
+                this.channelEpgMap.set(epgMap);
             });
     }
 
     /**
-     * Gets EPG program for a specific channel
+     * Handles channel selection from any tab
      */
-    getEpgForChannel(channel: Channel): EpgProgram | null | undefined {
-        const channelId = channel?.tvg?.id?.trim() || channel?.name?.trim();
-        return channelId ? this.channelEpgMap.get(channelId) : null;
+    onChannelSelected(channel: Channel): void {
+        this.store.dispatch(ChannelActions.setActiveChannel({ channel }));
     }
 
-    groupsComparator = (
-        a: KeyValue<string, any[]>,
-        b: KeyValue<string, any[]>
-    ): number => {
-        const numA = parseInt(a.key.replace(/\D/g, ''));
-        const numB = parseInt(b.key.replace(/\D/g, ''));
+    /**
+     * Handles favorite toggle from favorites tab
+     */
+    onFavoriteToggled(event: { channel: Channel; event: MouseEvent }): void {
+        event.event.stopPropagation();
+        this.store.dispatch(
+            FavoritesActions.updateFavorites({ channel: event.channel })
+        );
+    }
 
-        if (!isNaN(numA) && !isNaN(numB)) {
-            return numA - numB;
+    onHiddenGroupTitlesChanged(hiddenGroupTitles: string[]): void {
+        const playlist = this.activePlaylist();
+
+        if (!playlist || playlist.serverUrl || playlist.macAddress) {
+            return;
         }
 
-        return a.key.localeCompare(b.key);
-    };
+        this.store.dispatch(
+            PlaylistActions.updatePlaylistMeta({
+                playlist: {
+                    _id: playlist._id,
+                    hiddenGroupTitles,
+                } as PlaylistMeta,
+            })
+        );
+    }
+
+    /**
+     * Handles favorites reorder from drag-drop
+     */
+    onFavoritesReordered(channelIds: string[]): void {
+        this.store.dispatch(FavoritesActions.setFavorites({ channelIds }));
+    }
+
+    async removeRecentChannel(channelUrl: string): Promise<void> {
+        const playlistId = this.resolvedPlaylistId();
+        if (!playlistId) {
+            return;
+        }
+
+        const updatedPlaylist = await firstValueFrom(
+            this.playlistsService.removeFromM3uRecentlyViewed(
+                playlistId,
+                channelUrl
+            )
+        );
+
+        this.store.dispatch(
+            PlaylistActions.updatePlaylistMeta({
+                playlist: {
+                    _id: playlistId,
+                    recentlyViewed: updatedPlaylist?.recentlyViewed ?? [],
+                } as PlaylistMeta,
+            }) as any
+        );
+    }
+
+    async clearRecentChannels(): Promise<void> {
+        const playlistId = this.resolvedPlaylistId();
+        if (!playlistId) {
+            return;
+        }
+
+        const updatedPlaylist = await firstValueFrom(
+            this.playlistsService.clearM3uRecentlyViewed(playlistId)
+        );
+
+        this.store.dispatch(
+            PlaylistActions.updatePlaylistMeta({
+                playlist: {
+                    _id: playlistId,
+                    recentlyViewed: updatedPlaylist?.recentlyViewed ?? [],
+                } as PlaylistMeta,
+            }) as any
+        );
+    }
+
+    onSidebarWidthRequested(width: number): void {
+        this.sidebarWidthRequested.emit(width);
+    }
+
+    onSidebarWidthRequestEnded(width: number): void {
+        this.sidebarWidthRequestEnded.emit(width);
+    }
 }

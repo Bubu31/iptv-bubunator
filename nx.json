@@ -16,11 +16,9 @@
       "!{projectRoot}/test-setup.[jt]s"
     ],
     "sharedGlobals": [
-      "{workspaceRoot}/.github/workflows/ci.yml",
       "{workspaceRoot}/.github/workflows/ci.yml"
     ]
   },
-  "nxCloudId": "68be99a8c4fb535f60d0d8e8",
   "targetDefaults": {
     "@angular/build:application": {
       "cache": true,

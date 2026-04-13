@@ -15,17 +15,29 @@ export const playlistReducers = [
         };
     }),
     on(PlaylistActions.removePlaylist, (state, action): PlaylistState => {
+        const playlists = playlistsAdapter.removeOne(
+            action.playlistId,
+            state.playlists
+        );
         return {
             ...state,
-            playlists: playlistsAdapter.removeOne(
-                action.playlistId,
-                state.playlists
-            ),
+            playlists: {
+                ...playlists,
+                selectedId:
+                    state.playlists.selectedId === action.playlistId
+                        ? ''
+                        : playlists.selectedId,
+            },
         };
     }),
     on(PlaylistActions.updatePlaylist, (state, action): PlaylistState => {
+        const isActivePlaylist = state.playlists.selectedId === action.playlistId;
         return {
             ...state,
+            channels: isActivePlaylist
+                ? (action.playlist.playlist.items as Channel[])
+                : state.channels,
+            channelsLoading: isActivePlaylist ? false : state.channelsLoading,
             playlists: playlistsAdapter.updateOne(
                 {
                     id: action.playlistId,
@@ -84,29 +96,42 @@ export const playlistReducers = [
         }
     ),
     on(PlaylistActions.updatePlaylistMeta, (state, action): PlaylistState => {
+        const p = action.playlist;
         return {
             ...state,
             playlists: playlistsAdapter.updateOne(
                 {
-                    id: action.playlist._id,
+                    id: p._id,
                     changes: {
-                        title: action.playlist.title,
-                        autoRefresh: action.playlist.autoRefresh || false,
-                        userAgent: action.playlist.userAgent,
-                        ...(action.playlist.serverUrl !== null
-                            ? { serverUrl: action.playlist.serverUrl }
+                        ...(p.title != null ? { title: p.title } : {}),
+                        ...(p.autoRefresh != null
+                            ? { autoRefresh: p.autoRefresh }
                             : {}),
-                        ...(action.playlist.username !== null
-                            ? { username: action.playlist.username }
+                        ...(p.userAgent != null
+                            ? { userAgent: p.userAgent }
                             : {}),
-                        ...(action.playlist.password !== null
-                            ? { password: action.playlist.password }
+                        ...(p.serverUrl != null
+                            ? { serverUrl: p.serverUrl }
                             : {}),
-                        ...(action.playlist.macAddress !== null
-                            ? { macAddress: action.playlist.macAddress }
+                        ...(p.username != null ? { username: p.username } : {}),
+                        ...(p.password != null ? { password: p.password } : {}),
+                        ...(p.macAddress != null
+                            ? { macAddress: p.macAddress }
                             : {}),
-                        ...(action.playlist.portalUrl !== null
-                            ? { portalUrl: action.playlist.portalUrl }
+                        ...(p.portalUrl != null
+                            ? { portalUrl: p.portalUrl }
+                            : {}),
+                        ...(p.favorites != null
+                            ? { favorites: p.favorites }
+                            : {}),
+                        ...(p.recentlyViewed != null
+                            ? { recentlyViewed: p.recentlyViewed }
+                            : {}),
+                        ...(p.hiddenGroupTitles != null
+                            ? { hiddenGroupTitles: p.hiddenGroupTitles }
+                            : {}),
+                        ...(p.updateDate !== undefined
+                            ? { updateDate: p.updateDate }
                             : {}),
                     },
                 },
@@ -130,26 +155,22 @@ export const playlistReducers = [
         };
     }),
     on(PlaylistActions.removeAllPlaylists, (state): PlaylistState => {
+        const playlists = playlistsAdapter.removeAll(state.playlists);
         return {
             ...state,
-            playlists: playlistsAdapter.removeAll(state.playlists),
+            playlists: {
+                ...playlists,
+                selectedId: '',
+            },
         };
     }),
-    on(
-        PlaylistActions.setCurrentPlaylistId,
-        (state, { playlistId }): PlaylistState => {
-            return {
-                ...state,
-                currentPlaylistId: playlistId,
-            };
-        }
-    ),
     on(
         PlaylistActions.handleAddingPlaylistByUrl,
         (state, action): PlaylistState => {
             if (action.isTemporary) {
                 return {
                     ...state,
+                    channelsLoading: false,
                     channels: action.playlist.playlist.items as Channel[],
                 };
             } else {

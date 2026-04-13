@@ -2,6 +2,28 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Plan Mode
+
+- When Claude Code is in Plan Mode and produces a final `<proposed_plan>`, it must also save that finalized plan as a Markdown file in the repo-root `.plans/` directory.
+- Save only finalized plans. Do not write interim exploration, question turns, or draft revisions to `.plans/`.
+- Use the filename pattern `YYYY-MM-DD-short-topic.md` such as `.plans/2026-03-12-channel-filtering.md`.
+- If the intended filename already exists, append a numeric suffix such as `-2`, `-3`, and so on.
+
+## Documentation After Changes
+
+- After implementing a meaningful change, Claude Code must assess whether canonical repo docs need updates before considering the task complete.
+- Meaningful changes include new or changed user-visible behavior, architecture or data-flow changes, non-obvious maintenance workflows, new setup/debugging steps, and new subsystem contracts or boundaries.
+- Skip doc updates for trivial refactors with unchanged behavior, formatting-only edits, and isolated test-only changes.
+- Prefer updating an existing authoritative doc before creating a new one:
+  1. `README.md` for top-level developer or user workflows
+  2. `docs/architecture/` for architecture, ownership, and behavior contracts
+  3. the nearest module `README.md` for local usage or behavior
+- Repo docs are canonical even when they were originally drafted by an LLM. External wiki pages are derivative or synthesis content unless explicitly promoted back into the repo.
+- The external wiki sync is one-way by default: repo docs -> external wiki `_repo-context/`.
+- If repo docs changed and `IPTVNATOR_WIKI_VAULT` is configured, run `pnpm wiki:export --mode changed` after the doc update.
+- The wiki exporter only owns `_repo-context/` in the external vault. It must never overwrite repo docs or maintained wiki pages outside that folder.
+- Final task summaries should state whether docs were updated, which doc changed, and whether wiki export ran, was skipped, or failed.
+
 ## Project Overview
 
 IPTVnator is a cross-platform IPTV player application built with Angular and Electron, supporting M3U/M3U8 playlists, Xtream Codes API, and Stalker portals.
@@ -14,56 +36,113 @@ IPTVnator is a cross-platform IPTV player application built with Angular and Ele
 
 ```bash
 # Serve the Angular web app only (development mode, baseHref="/")
-npm run serve:frontend
+pnpm run serve:frontend
 # or
 nx serve web
 
 # Serve with PWA configuration (optimized, baseHref="/")
-npm run serve:frontend:pwa
+pnpm run serve:frontend:pwa
 # or
 nx serve web --configuration=pwa
 
 # Serve the Electron app (starts both frontend and backend)
-npm run serve:backend
+pnpm run serve:backend
 # or
 nx serve electron-backend
 
 # Build frontend for Electron (baseHref="./")
-npm run build:frontend
+pnpm run build:frontend
 # or
 nx build web
 
 # Build frontend for PWA deployment (baseHref="/")
-npm run build:frontend:pwa
+pnpm run build:frontend:pwa
 # or
 nx build web --configuration=pwa
 
 # Build backend (Electron)
-npm run build:backend
+pnpm run build:backend
 # or
 nx build electron-backend
 
 # Package the app (creates distributable without installers)
-npm run package:app
+pnpm run package:app
 # or
 nx run electron-backend:package
 
 # Create installers/executables
-npm run make:app
+pnpm run make:app
 # or
 nx run electron-backend:make
+```
+
+### Electron CDP Debugging
+
+- Start Electron in dev mode with: `nx serve electron-backend`
+- Package-script equivalent: `pnpm run serve:backend`
+- The workspace is configured to always launch Electron with: `--remote-debugging-port=9222`
+- Use CDP clients (Chrome DevTools Protocol tools) against: `127.0.0.1:9222`
+- When the task is Electron automation/debugging, use the `electron` skill
+
+For startup tracing or white-screen debugging:
+
+```bash
+IPTVNATOR_TRACE_STARTUP=1 nx serve electron-backend
+```
+
+Useful narrower flags:
+
+- `IPTVNATOR_TRACE_IPC=1` traces renderer `window.electron.*` bridge calls
+- `IPTVNATOR_TRACE_DB=1` traces DB worker requests and DB progress events
+- `IPTVNATOR_TRACE_SQL=1` traces SQLite statements in both main and worker connections
+- `IPTVNATOR_TRACE_WINDOW=1` traces BrowserWindow navigation/load lifecycle
+- `IPTVNATOR_TRACE_RENDERER_CONSOLE=1` mirrors renderer console logs into the Electron terminal
+
+For GPU/compositor debugging:
+
+```bash
+IPTVNATOR_DISABLE_HARDWARE_ACCELERATION=1 nx serve electron-backend
+```
+
+If the Nx daemon gets into a bad state before rerunning Electron:
+
+```bash
+pnpm nx reset
+```
+
+Use global `agent-browser` (preferred):
+
+```bash
+# Verify CDP targets
+agent-browser --cdp 9222 tab list
+
+# Switch to the app tab and inspect interactive elements
+agent-browser --cdp 9222 tab 1
+agent-browser --cdp 9222 snapshot -i -c -d 4
+
+# Capture debug artifacts
+agent-browser --cdp 9222 screenshot /tmp/iptvnator-cdp.png
+agent-browser --cdp 9222 trace start /tmp/iptvnator.trace.zip
+agent-browser --cdp 9222 wait 1500
+agent-browser --cdp 9222 trace stop /tmp/iptvnator.trace.zip
+```
+
+If `agent-browser` is not in PATH, use:
+
+```bash
+npx --yes agent-browser --cdp 9222 tab list
 ```
 
 ### Testing
 
 ```bash
 # Run frontend tests
-npm run test:frontend
+pnpm run test:frontend
 # or
 nx test web
 
 # Run backend tests
-npm run test:backend
+pnpm run test:backend
 # or
 nx test electron-backend
 
@@ -82,6 +161,16 @@ nx lint web
 
 # Lint backend
 nx lint electron-backend
+```
+
+### Documentation And Wiki Export
+
+```bash
+# Export a full canonical-doc snapshot into the external Obsidian vault
+pnpm wiki:export --mode full
+
+# Export only the latest repo context into the external Obsidian vault
+pnpm wiki:export --mode changed
 ```
 
 ## Architecture
@@ -148,7 +237,7 @@ The Xtream Codes module uses NgRx Signal Store with a layered architecture:
 
 File structure:
 ```
-apps/web/src/app/xtream-tauri/
+apps/web/src/app/xtream-electron/
 ├── stores/
 │   ├── features/
 │   │   ├── with-portal.feature.ts      # Playlist & portal status
@@ -185,6 +274,78 @@ Data strategies by environment:
 | **Electron** | DB-first: Check DB → fetch API if missing → cache to DB |
 | **PWA** | API-only: Always fetch from API, store in memory |
 
+**M3U Playlist Module Architecture**:
+
+The M3U playlist module handles traditional M3U/M3U8 playlists with support for 90,000+ channels.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         VIDEO PLAYER PAGE                            │
+│                    apps/web/src/app/home/video-player/              │
+├─────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌──────────────────────┐  ┌────────────────────┐ │
+│  │   Sidebar   │  │    Video Player      │  │   EPG List         │ │
+│  │             │  │  (ArtPlayer/Video.js)│  │   (Right drawer)   │ │
+│  │ ┌─────────┐ │  │                      │  │                    │ │
+│  │ │Channel  │ │  │                      │  │                    │ │
+│  │ │List     │ │  │                      │  │                    │ │
+│  │ │Container│ │  │                      │  │                    │ │
+│  │ └─────────┘ │  │                      │  │                    │ │
+│  └─────────────┘  └──────────────────────┘  └────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Radio Channel Layout** (when `channel.radio === 'true'`):
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  ┌─────────────┐  ┌────────────────────────────────────────────────┐│
+│  │   Sidebar   │  │  Blurred backdrop (station logo)              ││
+│  │             │  │  ┌──────────┐                                 ││
+│  │             │  │  │ Artwork  │  ← cinematic hero layout        ││
+│  │             │  │  └──────────┘                                 ││
+│  │             │  │  Station Name                                 ││
+│  │             │  │  [LIVE] badge                                 ││
+│  │             │  │  ⏮  ▶/⏸  ⏭   ← transport controls          ││
+│  │             │  │  🔊 ━━━━━━━━━  ← volume slider               ││
+│  │             │  │  (no EPG panel)                               ││
+│  └─────────────┘  └────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+Key radio behavior:
+- Detection: `channel.radio === 'true'` (string from M3U `radio` attribute)
+- The audio player always renders inline — `shouldShowInlinePlayer` is bypassed for radio
+- EPG panel is conditionally hidden in the template when radio is active
+- Volume is shared with video player via `localStorage` key `'volume'`
+- Keyboard: ArrowUp/Down adjusts volume by 5%, M toggles mute
+- Component: `libs/ui/playback/src/lib/audio-player/audio-player.component.ts`
+
+Channel List Component Structure (parent coordinator pattern):
+```
+libs/ui/components/src/lib/channel-list-container/
+├── channel-list-container.component.ts   # Parent - shared state coordinator
+├── all-channels-tab/                      # Virtual scroll + debounced search
+├── groups-tab/                            # Expansion panels + infinite scroll
+├── favorites-tab/                         # CDK drag-drop reordering
+└── channel-list-item/                     # Individual channel display
+```
+
+Key patterns:
+- **EnrichedChannel**: Pre-computed EPG data attached to channels for performance
+- **Parent coordinator**: Manages shared signals (`channelEpgMap`, `progressTick`, `favoriteIds`)
+- **Virtual scrolling**: CDK virtual scroll for 90,000+ channel lists
+- **Infinite scroll**: IntersectionObserver in groups tab loads 50 items at a time
+- **Global progress tick**: Single 30s interval instead of per-item intervals
+
+State management via NgRx (`libs/m3u-state/`):
+- `PlaylistActions`: loadPlaylists, addPlaylist, removePlaylist, parsePlaylist
+- `ChannelActions`: setChannels, setActiveChannel, setAdjacentChannelAsActive
+- `EpgActions`: setActiveEpgProgram, setCurrentEpgProgram, setEpgAvailableFlag
+- `FavoritesActions`: updateFavorites, setFavorites
+
+See `docs/architecture/m3u-playlist-module.md` for complete documentation.
+
 **Routing**: Lazy-loaded routes in `apps/web/src/app/app.routes.ts`
 
 - Home/playlists overview: `/`
@@ -217,6 +378,24 @@ Data strategies by environment:
     - Browser-based NoSQL storage
     - Same schema structure but implemented in IndexedDB
     - Limited by browser storage quotas
+
+**TypeScript File Size Rule**:
+
+Keep TypeScript files under **300 lines**. Hard maximum is **350–400 lines**.
+
+- When creating new files, design them to stay within this limit from the start.
+- When adding a feature to an existing file that would push it past 350 lines, **refactor first**: extract helpers, sub-services, or feature modules before adding the new code.
+- When you notice a file already exceeds 350 lines, **proactively suggest a refactoring** (or perform it if the change is straightforward) — even if the immediate task is small.
+
+Typical split strategies:
+- Angular components: extract child components, move logic to a dedicated service or store feature
+- Signal store features: split into smaller `with*` feature functions in separate files
+- Services: split by responsibility (e.g. separate API, transformation, and state concerns)
+- Utility files: group by domain and export from a barrel `index.ts`
+
+This rule exists to keep the codebase navigable and reviewable. A 150-line file is always preferable to a 500-line file.
+
+---
 
 **Angular Coding Standards**:
 
@@ -343,6 +522,16 @@ This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use 
 - Built-in HTML5 player with HLS.js or Video.js
 - External players: MPV, VLC (via IPC to Electron backend)
 
+**Radio Player**:
+
+- Dedicated audio player for channels with `radio="true"` M3U attribute
+- Cinematic layout: blurred station logo as backdrop, floating artwork card, transport controls
+- Always uses the built-in inline player — external player settings (MPV/VLC) are ignored for radio
+- EPG panel is hidden for radio channels (radio streams have no EPG data)
+- Volume synced with video player via shared `localStorage` key `'volume'`
+- Keyboard shortcuts: ArrowUp/ArrowDown (volume), M (mute)
+- Component: `libs/ui/playback/src/lib/audio-player/audio-player.component.ts`
+
 **EPG (Electronic Program Guide)**:
 
 - XMLTV format support
@@ -388,10 +577,10 @@ IPTVnator supports both Electron (desktop app) and PWA (web browser) to provide 
 The app uses different base href values depending on the build target:
 
 - **Development & PWA**: `baseHref="/"` (from `index.html`)
-    - Used by: `npm run serve:frontend`, `npm run build:frontend:pwa`
+    - Used by: `pnpm run serve:frontend`, `pnpm run build:frontend:pwa`
     - For web servers with proper routing
 - **Electron Production**: `baseHref="./"` (overridden in build config)
-    - Used by: `npm run build:backend`, `npm run make:app`
+    - Used by: `pnpm run build:backend`, `pnpm run make:app`
     - Required for `file://` protocol in Electron
 
 Build configurations in `apps/web/project.json`:

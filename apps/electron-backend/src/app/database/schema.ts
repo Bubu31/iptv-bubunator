@@ -12,9 +12,14 @@ export {
   favorites,
   epgChannels,
   epgPrograms,
+  playbackPositions,
+  downloads,
+  appState,
   // Types
   type Playlist,
   type NewPlaylist,
+  type AppState,
+  type NewAppState,
   type Category,
   type NewCategory,
   type Content,
@@ -27,5 +32,8 @@ export {
   type NewEpgChannel,
   type EpgProgramDb,
   type NewEpgProgramDb,
+  type PlaybackPosition,
+  type NewPlaybackPosition,
+  type Download,
+  type NewDownload,
 } from 'database';
-

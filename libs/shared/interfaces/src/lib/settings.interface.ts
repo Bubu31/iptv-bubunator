@@ -13,6 +13,11 @@ export enum VideoPlayer {
     ArtPlayer = 'artplayer',
 }
 
+export enum StartupBehavior {
+    FirstView = 'first-view',
+    RestoreLastView = 'restore-last-view',
+}
+
 /**
  * Describes all available settings options of the application
  */
@@ -22,10 +27,16 @@ export interface Settings {
     streamFormat: StreamFormat;
     language: Language;
     showCaptions: boolean;
+    showDashboard: boolean;
+    startupBehavior: StartupBehavior;
+    /** Show the desktop footer bar for external playback status */
+    showExternalPlaybackBar?: boolean;
     theme: Theme;
     mpvPlayerPath: string;
     mpvReuseInstance: boolean;
     vlcPlayerPath: string;
     remoteControl: boolean;
     remoteControlPort: number;
+    /** Custom download folder path (uses system Downloads folder if not set) */
+    downloadFolder?: string;
 }

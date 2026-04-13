@@ -158,7 +158,8 @@
     },
     "THEMES": {
         "DARK_THEME": "Donker thema",
-        "LIGHT_THEME": "Licht thema"
+        "LIGHT_THEME": "Licht thema",
+        "SYSTEM_THEME": "Systeemthema"
     },
     "CHANNELS": {
         "SEARCH_CHANNEL": "Zoek een kanaal",
@@ -224,7 +225,8 @@
         "DUTCH": "Nederlands",
         "BELARUSIAN": "Беларуская",
         "POLISH": "Polski",
-        "PORTUGUESE": "Português"
+        "PORTUGUESE": "Português",
+        "GREEK": "Ελληνικά"
     },
     "YES": "Ja",
     "NO": "Nee",
@@ -305,7 +307,11 @@
             "NO_SEARCH_RESULTS": "Niks gevonden, verander je zoekopdracht"
         },
         "STREAM_URL_COPIED": "Stream URL Gekopieërd",
-        "COPY_STREAM_URL": "Kopieër Stream URL"
+        "COPY_STREAM_URL": "Kopieër Stream URL",
+        "SEARCH_VIEW": {
+            "RESULTS_FOUND": "{{count}} resultaten gevonden",
+            "NO_RESULTS_FOR": "Geen resultaten gevonden voor \"{{term}}\""
+        }
     },
     "INFORMATION": "Informatie",
     "REMOTE_CONTROL": {

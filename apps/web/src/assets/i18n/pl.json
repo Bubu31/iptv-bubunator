@@ -158,7 +158,8 @@
     },
     "THEMES": {
         "DARK_THEME": "Ciemny motyw",
-        "LIGHT_THEME": "Jasny motyw"
+        "LIGHT_THEME": "Jasny motyw",
+        "SYSTEM_THEME": "Motyw systemowy"
     },
     "CHANNELS": {
         "SEARCH_CHANNEL": "Szukaj kanału",
@@ -224,7 +225,8 @@
         "DUTCH": "Nederlands",
         "BELARUSIAN": "Беларуская",
         "POLISH": "Polski",
-        "PORTUGUESE": "Português"
+        "PORTUGUESE": "Português",
+        "GREEK": "Ελληνικά"
     },
     "YES": "Tak",
     "NO": "Nie",
@@ -305,7 +307,11 @@
             "NO_SEARCH_RESULTS": "Nic nie znaleziono, spróbuj zmienić zapytanie wyszukiwania"
         },
         "STREAM_URL_COPIED": "URL strumienia skopiowany do schowka",
-        "COPY_STREAM_URL": "Kopiuj URL strumienia"
+        "COPY_STREAM_URL": "Kopiuj URL strumienia",
+        "SEARCH_VIEW": {
+            "RESULTS_FOUND": "Znaleziono {{count}} wyników",
+            "NO_RESULTS_FOR": "Brak wyników dla „{{term}}”"
+        }
     },
     "INFORMATION": "Informacje",
     "REMOTE_CONTROL": {

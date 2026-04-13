@@ -158,7 +158,8 @@
     },
     "THEMES": {
         "DARK_THEME": "المظهر الداكن",
-        "LIGHT_THEME": "المظهر الفاتح"
+        "LIGHT_THEME": "المظهر الفاتح",
+        "SYSTEM_THEME": "مظهر النظام"
     },
     "CHANNELS": {
         "SEARCH_CHANNEL": "قلب على قناة",
@@ -224,7 +225,8 @@
         "DUTCH": "Nederlands",
         "BELARUSIAN": "Беларуская",
         "POLISH": "Polski",
-        "PORTUGUESE": "Português"
+        "PORTUGUESE": "Português",
+        "GREEK": "Ελληνικά"
     },
     "YES": "آه",
     "NO": "لا",
@@ -305,7 +307,11 @@
             "NO_SEARCH_RESULTS": "ما تلقى والو، حاول تبدل طلب البحث ديالك"
         },
         "STREAM_URL_COPIED": "رابط البث تنقل للحافظة",
-        "COPY_STREAM_URL": "نسخ رابط البث"
+        "COPY_STREAM_URL": "نسخ رابط البث",
+        "SEARCH_VIEW": {
+            "RESULTS_FOUND": "تلقاو {{count}} ديال النتايج",
+            "NO_RESULTS_FOR": "ما تلقاو حتى نتيجة لـ \"{{term}}\""
+        }
     },
     "INFORMATION": "معلومات",
     "REMOTE_CONTROL": {

@@ -1,0 +1,10 @@
+<form [formGroup]="textForm">
+    <mat-form-field class="w-full" appearance="fill">
+        <mat-label>{{ 'HOME.TEXT_IMPORT.LABEL' | translate }}</mat-label>
+        <textarea
+            formControlName="text"
+            matInput
+            placeholder="#EXTM3U url-tvg=..."
+        ></textarea>
+    </mat-form-field>
+</form>

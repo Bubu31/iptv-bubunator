@@ -35,7 +35,22 @@ export const playlists = sqliteTable('playlists', {
     autoRefresh: integer('autoRefresh', { mode: 'boolean' }).default(false),
     macAddress: text('macAddress'),
     url: text('url'),
+    portalUrl: text('portal_url'),
+    count: integer('count'),
+    importDate: text('import_date'),
+    updateDate: integer('update_date'),
+    position: integer('position'),
+    favorites: text('favorites'),
+    recentlyViewed: text('recently_viewed'),
+    payload: text('payload'),
     lastUsage: text('last_usage'),
+});
+
+// App key-value state table (e.g. one-time migration flags)
+export const appState = sqliteTable('app_state', {
+    key: text('key').primaryKey(),
+    value: text('value').notNull(),
+    updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`),
 });
 
 // Categories table
@@ -54,6 +69,9 @@ export const categories = sqliteTable(
     (table) => ({
         playlistIdx: index('idx_categories_playlist').on(table.playlistId),
         typeIdx: index('idx_categories_type').on(table.type),
+        playlistTypeXtreamUnique: uniqueIndex(
+            'categories_playlist_type_xtream_unique'
+        ).on(table.playlistId, table.type, table.xtreamId),
     })
 );
 
@@ -69,6 +87,10 @@ export const content = sqliteTable(
         rating: text('rating'),
         added: text('added'),
         posterUrl: text('poster_url'),
+        epgChannelId: text('epg_channel_id'),
+        tvArchive: integer('tv_archive'),
+        tvArchiveDuration: integer('tv_archive_duration'),
+        directSource: text('direct_source'),
         xtreamId: integer('xtream_id').notNull(),
         type: text('type', { enum: ['live', 'movie', 'series'] }).notNull(),
     },
@@ -77,6 +99,13 @@ export const content = sqliteTable(
         categoryIdx: index('idx_content_category').on(table.categoryId),
         titleIdx: index('idx_content_title').on(table.title),
         xtreamIdx: index('idx_content_xtream').on(table.xtreamId),
+        categoryTypeXtreamUnique: uniqueIndex(
+            'content_category_type_xtream_unique'
+        ).on(table.categoryId, table.type, table.xtreamId),
+        typeAddedIdx: index('idx_content_type_added').on(
+            table.type,
+            table.added
+        ),
     })
 );
 
@@ -114,6 +143,8 @@ export const favorites = sqliteTable(
             .notNull()
             .references(() => playlists.id, { onDelete: 'cascade' }),
         addedAt: text('added_at').default(sql`CURRENT_TIMESTAMP`),
+        /** Display order position in the global favorites list (lower = first) */
+        position: integer('position').default(0),
     },
     (table) => ({
         contentPlaylistUnique: uniqueIndex(
@@ -161,6 +192,7 @@ export const epgPrograms = sqliteTable(
     (table) => ({
         channelIdx: index('idx_epg_programs_channel').on(table.channelId),
         startIdx: index('idx_epg_programs_start').on(table.start),
+        stopIdx: index('idx_epg_programs_stop').on(table.stop),
         timeRangeIdx: index('idx_epg_programs_time_range').on(
             table.channelId,
             table.start,
@@ -169,9 +201,53 @@ export const epgPrograms = sqliteTable(
     })
 );
 
+// Playback Positions table
+export const playbackPositions = sqliteTable(
+    'playback_positions',
+    {
+        id: integer('id').primaryKey({ autoIncrement: true }),
+        playlistId: text('playlist_id')
+            .notNull()
+            .references(() => playlists.id, { onDelete: 'cascade' }),
+        // For VOD: store xtream_id of the movie
+        // For Series: store episode ID (from XtreamSerieEpisode.id)
+        contentXtreamId: integer('content_xtream_id').notNull(),
+        // 'vod' | 'episode'
+        contentType: text('content_type', {
+            enum: ['vod', 'episode'],
+        }).notNull(),
+        // For episodes: store series xtream_id for grouping
+        seriesXtreamId: integer('series_xtream_id'),
+        // For episodes: store season and episode numbers for display
+        seasonNumber: integer('season_number'),
+        episodeNumber: integer('episode_number'),
+        // Playback position in seconds
+        positionSeconds: integer('position_seconds').notNull().default(0),
+        // Total duration in seconds (for percentage calculation)
+        durationSeconds: integer('duration_seconds'),
+        // Last updated timestamp
+        updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`),
+    },
+    (table) => ({
+        // Unique constraint: one position per content per playlist
+        contentPlaylistUnique: uniqueIndex(
+            'playback_positions_content_playlist_unique'
+        ).on(table.contentXtreamId, table.playlistId, table.contentType),
+        playlistIdx: index('playback_positions_playlist_idx').on(
+            table.playlistId
+        ),
+        seriesIdx: index('playback_positions_series_idx').on(
+            table.seriesXtreamId
+        ),
+        updatedIdx: index('playback_positions_updated_idx').on(table.updatedAt),
+    })
+);
+
 // Type exports for TypeScript
 export type Playlist = typeof playlists.$inferSelect;
 export type NewPlaylist = typeof playlists.$inferInsert;
+export type AppState = typeof appState.$inferSelect;
+export type NewAppState = typeof appState.$inferInsert;
 
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;
@@ -190,3 +266,54 @@ export type NewEpgChannel = typeof epgChannels.$inferInsert;
 
 export type EpgProgramDb = typeof epgPrograms.$inferSelect;
 export type NewEpgProgramDb = typeof epgPrograms.$inferInsert;
+
+export type PlaybackPosition = typeof playbackPositions.$inferSelect;
+export type NewPlaybackPosition = typeof playbackPositions.$inferInsert;
+
+// Downloads table
+export const downloads = sqliteTable(
+    'downloads',
+    {
+        id: integer('id').primaryKey({ autoIncrement: true }),
+        playlistId: text('playlist_id')
+            .notNull()
+            .references(() => playlists.id, { onDelete: 'cascade' }),
+        // Content identifiers
+        xtreamId: integer('xtream_id').notNull(),
+        contentType: text('content_type', {
+            enum: ['vod', 'episode'],
+        }).notNull(),
+        // For episodes: store series info
+        seriesXtreamId: integer('series_xtream_id'),
+        seasonNumber: integer('season_number'),
+        episodeNumber: integer('episode_number'),
+        // Download metadata
+        title: text('title').notNull(),
+        url: text('url').notNull(),
+        fileName: text('file_name'),
+        filePath: text('file_path'),
+        posterUrl: text('poster_url'),
+        // Download progress
+        status: text('status', {
+            enum: ['queued', 'downloading', 'completed', 'failed', 'canceled'],
+        })
+            .notNull()
+            .default('queued'),
+        bytesDownloaded: integer('bytes_downloaded').default(0),
+        totalBytes: integer('total_bytes'),
+        errorMessage: text('error_message'),
+        // Timestamps
+        createdAt: text('created_at').default(sql`CURRENT_TIMESTAMP`),
+        updatedAt: text('updated_at').default(sql`CURRENT_TIMESTAMP`),
+    },
+    (table) => ({
+        playlistIdx: index('downloads_playlist_idx').on(table.playlistId),
+        statusIdx: index('downloads_status_idx').on(table.status),
+        xtreamPlaylistUnique: uniqueIndex(
+            'downloads_xtream_playlist_unique'
+        ).on(table.xtreamId, table.playlistId, table.contentType),
+    })
+);
+
+export type Download = typeof downloads.$inferSelect;
+export type NewDownload = typeof downloads.$inferInsert;

@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'path';
 import { EpgProgram } from 'shared-interfaces';
@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 import { Worker } from 'worker_threads';
 import { getDatabase } from '../database/connection';
 import * as schema from '../database/schema';
+import { resolveWorkerRuntimeBootstrap } from '../workers/worker-runtime-paths';
 
 /**
  * EPG Events Handler
@@ -16,6 +17,29 @@ export default class EpgEvents {
     private static fetchedUrls: Set<string> = new Set();
     private static workers: Map<string, Worker> = new Map();
     private static readonly loggerLabel = '[EPG Events]';
+
+    private static createEpgWorker(): Worker {
+        const bootstrap = resolveWorkerRuntimeBootstrap({
+            isPackaged: app.isPackaged,
+            workerFilename: 'epg-parser.worker.js',
+            developmentWorkerDir: path.join(__dirname, 'workers'),
+            resourcesPath: (
+                process as NodeJS.Process & { resourcesPath?: string }
+            ).resourcesPath,
+            appPath: app.getAppPath(),
+        });
+
+        const workerURL = pathToFileURL(bootstrap.workerPath);
+        return new Worker(workerURL, {
+            resourceLimits: {
+                maxOldGenerationSizeMb: 4096,
+                maxYoungGenerationSizeMb: 512,
+            },
+            workerData: {
+                nativeModuleSearchPaths: bootstrap.nativeModuleSearchPaths,
+            },
+        });
+    }
 
     /**
      * Send EPG progress to all renderer windows
@@ -74,14 +98,6 @@ export default class EpgEvents {
             this.fetchedUrls.delete(url);
             return await this.handleFetchEpg([url]);
         });
-
-        // Cleanup expired programs (uses worker thread)
-        ipcMain.handle(
-            'EPG_CLEANUP_EXPIRED',
-            async (_event, hoursToKeep?: number) => {
-                return this.runCleanupInWorker(hoursToKeep ?? 24);
-            }
-        );
 
         // Clear all EPG data
         ipcMain.handle('EPG_CLEAR_ALL', async () => {
@@ -254,35 +270,9 @@ export default class EpgEvents {
         }
 
         return new Promise((resolve, reject) => {
-            let workerPath: string;
-
-            if (app.isPackaged) {
-                const resourcesPath = path.dirname(app.getAppPath());
-                workerPath = path.join(
-                    resourcesPath,
-                    'dist',
-                    'apps',
-                    'electron-backend',
-                    'workers',
-                    'epg-parser.worker.js'
-                );
-            } else {
-                workerPath = path.join(
-                    __dirname,
-                    'workers',
-                    'epg-parser.worker.js'
-                );
-            }
-
             let worker: Worker;
             try {
-                const workerURL = pathToFileURL(workerPath);
-                worker = new Worker(workerURL, {
-                    resourceLimits: {
-                        maxOldGenerationSizeMb: 4096,
-                        maxYoungGenerationSizeMb: 512,
-                    },
-                });
+                worker = this.createEpgWorker();
             } catch (error) {
                 console.error(
                     this.loggerLabel,
@@ -316,10 +306,6 @@ export default class EpgEvents {
 
                             case 'EPG_PROGRESS':
                                 if (message.stats) {
-                                    console.log(
-                                        this.loggerLabel,
-                                        `Progress: ${message.stats.totalChannels} channels, ${message.stats.totalPrograms} programs`
-                                    );
                                     // Forward progress to renderer
                                     this.sendProgressToRenderer(
                                         url,
@@ -342,18 +328,6 @@ export default class EpgEvents {
                                     message.stats
                                 );
                                 this.fetchedUrls.add(url);
-                                // Trigger cleanup in worker thread (non-blocking)
-                                worker.postMessage({
-                                    type: 'CLEANUP_EXPIRED',
-                                    hoursToKeep: 24,
-                                });
-                                break;
-
-                            case 'CLEANUP_COMPLETE':
-                                console.log(
-                                    this.loggerLabel,
-                                    'Cleanup complete, terminating worker'
-                                );
                                 worker.terminate();
                                 this.workers.delete(url);
                                 resolve();
@@ -444,46 +418,49 @@ export default class EpgEvents {
     ): Promise<EpgProgram[]> {
         try {
             const db = await getDatabase();
-            const now = new Date().toISOString();
+            const trimmedChannelId = channelId.trim();
+
+            if (!trimmedChannelId) {
+                return [];
+            }
 
             // Try exact channel ID match first
             let results = await db
                 .select()
                 .from(schema.epgPrograms)
-                .where(
-                    and(
-                        eq(schema.epgPrograms.channelId, channelId),
-                        gte(schema.epgPrograms.stop, now)
-                    )
-                )
+                .where(eq(schema.epgPrograms.channelId, trimmedChannelId))
                 .orderBy(schema.epgPrograms.start)
-                .limit(100);
+                .limit(500);
 
             if (results.length > 0) {
                 return results.map(this.transformDbRowToEpgProgram);
             }
 
-            // Try to find channel by display name
-            const channel = await db
+            // Try exact display name match before giving up. Using wildcard LIKE
+            // here can scan the whole table on the Electron main process.
+            let channel = await db
                 .select()
                 .from(schema.epgChannels)
-                .where(
-                    sql`LOWER(${schema.epgChannels.displayName}) LIKE LOWER(${'%' + channelId + '%'})`
-                )
+                .where(eq(schema.epgChannels.displayName, trimmedChannelId))
                 .limit(1);
+
+            if (channel.length === 0) {
+                channel = await db
+                    .select()
+                    .from(schema.epgChannels)
+                    .where(
+                        sql`${schema.epgChannels.displayName} = ${trimmedChannelId} COLLATE NOCASE`
+                    )
+                    .limit(1);
+            }
 
             if (channel.length > 0) {
                 results = await db
                     .select()
                     .from(schema.epgPrograms)
-                    .where(
-                        and(
-                            eq(schema.epgPrograms.channelId, channel[0].id),
-                            gte(schema.epgPrograms.stop, now)
-                        )
-                    )
+                    .where(eq(schema.epgPrograms.channelId, channel[0].id))
                     .orderBy(schema.epgPrograms.start)
-                    .limit(100);
+                    .limit(500);
 
                 return results.map(this.transformDbRowToEpgProgram);
             }
@@ -582,110 +559,13 @@ export default class EpgEvents {
     }
 
     /**
-     * Run cleanup in worker thread to avoid blocking main thread
-     */
-    private static async runCleanupInWorker(
-        hoursToKeep: number
-    ): Promise<{ success: boolean }> {
-        return new Promise((resolve, reject) => {
-            let workerPath: string;
-
-            if (app.isPackaged) {
-                const resourcesPath = path.dirname(app.getAppPath());
-                workerPath = path.join(
-                    resourcesPath,
-                    'dist',
-                    'apps',
-                    'electron-backend',
-                    'workers',
-                    'epg-parser.worker.js'
-                );
-            } else {
-                workerPath = path.join(
-                    __dirname,
-                    'workers',
-                    'epg-parser.worker.js'
-                );
-            }
-
-            let worker: Worker;
-            try {
-                const workerURL = pathToFileURL(workerPath);
-                worker = new Worker(workerURL);
-            } catch (error) {
-                console.error(
-                    this.loggerLabel,
-                    'Failed to create worker for cleanup:',
-                    error
-                );
-                reject(error);
-                return;
-            }
-
-            worker.on(
-                'message',
-                (message: { type: string; error?: string }) => {
-                    if (message.type === 'READY') {
-                        worker.postMessage({
-                            type: 'CLEANUP_EXPIRED',
-                            hoursToKeep,
-                        });
-                    } else if (message.type === 'CLEANUP_COMPLETE') {
-                        worker.terminate();
-                        resolve({ success: true });
-                    } else if (message.type === 'EPG_ERROR') {
-                        console.error(
-                            this.loggerLabel,
-                            'Worker cleanup error:',
-                            message.error
-                        );
-                        worker.terminate();
-                        reject(new Error(message.error || 'Cleanup failed'));
-                    }
-                }
-            );
-
-            worker.on('error', (error) => {
-                console.error(
-                    this.loggerLabel,
-                    'Worker error during cleanup:',
-                    error
-                );
-                worker.terminate();
-                reject(error);
-            });
-        });
-    }
-
-    /**
      * Clear all EPG data using worker thread to avoid blocking main thread
      */
     static async clearEpgData(): Promise<void> {
         return new Promise((resolve, reject) => {
-            let workerPath: string;
-
-            if (app.isPackaged) {
-                const resourcesPath = path.dirname(app.getAppPath());
-                workerPath = path.join(
-                    resourcesPath,
-                    'dist',
-                    'apps',
-                    'electron-backend',
-                    'workers',
-                    'epg-parser.worker.js'
-                );
-            } else {
-                workerPath = path.join(
-                    __dirname,
-                    'workers',
-                    'epg-parser.worker.js'
-                );
-            }
-
             let worker: Worker;
             try {
-                const workerURL = pathToFileURL(workerPath);
-                worker = new Worker(workerURL);
+                worker = this.createEpgWorker();
             } catch (error) {
                 console.error(
                     this.loggerLabel,

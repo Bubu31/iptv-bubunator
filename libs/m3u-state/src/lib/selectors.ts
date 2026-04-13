@@ -1,13 +1,7 @@
-import { EntityState } from '@ngrx/entity';
-import { createFeatureSelector, createSelector, Selector } from '@ngrx/store';
-import {
-    GLOBAL_FAVORITES_PLAYLIST_ID,
-    Playlist,
-    PlaylistMeta,
-} from 'shared-interfaces';
+import { createFeatureSelector, createSelector } from '@ngrx/store';
+import { Playlist } from 'shared-interfaces';
 import * as fromPlaylistMetaState from './playlists.state';
 import * as fromPlaylistState from './reducers';
-import { selectRouteParam } from './router.selectors';
 import { PlaylistState } from './state';
 
 export const selectPlaylistState =
@@ -23,14 +17,19 @@ export const selectActive = createSelector(
     fromPlaylistState.selectActiveReducer
 );
 
+export const selectActivePlaybackUrl = createSelector(
+    selectPlaylistState,
+    fromPlaylistState.selectActivePlaybackUrlReducer
+);
+
 export const selectCurrentEpgProgram = createSelector(
     selectPlaylistState,
     fromPlaylistState.selectCurrentEpgProgramReducer
 );
 
-export const selectCurrentPlaylistId = createSelector(
+export const selectChannelsLoading = createSelector(
     selectPlaylistState,
-    fromPlaylistState.selectCurrentPlaylistIdReducer
+    fromPlaylistState.selectChannelsLoadingReducer
 );
 
 export const selectChannels = createSelector(
@@ -56,43 +55,15 @@ export const selectAllPlaylistsMeta = createSelector(
 
 export const selectActiveTypeFilters = createSelector(
     selectPlaylistsMetaState,
-    fromPlaylistMetaState.getPlaylistMetaEntities,
     (state) => state.selectedFilters
 );
 
 export const selectPlaylistEntity = (id: string) =>
-    createSelector(
-        selectPlaylistsMetaState,
-        fromPlaylistMetaState.getPlaylistMetaEntities,
-        (data) => {
-            return data.entities[id];
-        }
-    );
+    createSelector(selectPlaylistEntities, (entities) => entities[id]);
 
 export const selectActivePlaylistId = createSelector(
     selectPlaylistsMetaState,
-    fromPlaylistMetaState.getPlaylistMetaEntities,
-    (data) => data.selectedId
-);
-
-export const selectPlaylistTitle = createSelector(
-    selectPlaylistsMetaState,
-    fromPlaylistMetaState.getPlaylistMetaEntities,
-    selectCurrentPlaylistId,
-    (data) => {
-        if (data.selectedId === GLOBAL_FAVORITES_PLAYLIST_ID) {
-            return 'Global favorites';
-        } else if (
-            data.entities &&
-            data.selectedId &&
-            data.entities[data.selectedId]
-        ) {
-            return (
-                data.entities[data.selectedId]?.title ||
-                data.entities[data.selectedId]?.filename
-            );
-        } else return 'Untitled playlist';
-    }
+    (state) => state.selectedId
 );
 
 export const selectPlaylistEntities = createSelector(
@@ -100,16 +71,21 @@ export const selectPlaylistEntities = createSelector(
     fromPlaylistMetaState.getPlaylistMetaEntities
 );
 
-export const selectCurrentPlaylist = createSelector(
+export const selectActivePlaylist = createSelector(
     selectPlaylistEntities,
-    selectRouteParam('id'),
-    selectCurrentPlaylistId,
-    (entities, id, currentPlaylistId) => {
-        if (entities) {
-            return entities[id!] || entities[currentPlaylistId!];
+    selectActivePlaylistId,
+    (entities, activePlaylistId) => {
+        if (!entities || !activePlaylistId) {
+            return null;
         }
-        return null;
+
+        return entities[activePlaylistId] ?? null;
     }
+);
+
+export const selectPlaylistTitle = createSelector(
+    selectActivePlaylist,
+    (playlist) => playlist?.title || playlist?.filename || 'Untitled playlist'
 );
 
 export const selectPlaylistById = (id: string) =>
@@ -120,30 +96,10 @@ export const selectPlaylistById = (id: string) =>
         return null;
     });
 
-export const selectActivePlaylist = createSelector(
-    selectPlaylistsMetaState,
-    (state) => {
-        if (state.entities && state.selectedId !== '') {
-            return state.entities[state.selectedId] as Playlist;
-        }
-        return null;
-    }
-);
-
 export const selectFavorites = createSelector(
-    selectPlaylistsMetaState,
-    fromPlaylistMetaState.getPlaylistMetaEntities,
-    fromPlaylistState.selectPlaylistId as unknown as Selector<
-        EntityState<PlaylistMeta>,
-        string
-    >,
-    (data) => {
-        if (
-            data.entities &&
-            data.selectedId &&
-            data.entities[data.selectedId]
-        ) {
-            return data.entities[data.selectedId]?.favorites || [];
-        } else return [];
-    }
+    selectActivePlaylist,
+    (playlist) =>
+        (playlist?.favorites || []).filter(
+            (favorite): favorite is string => typeof favorite === 'string'
+        )
 );

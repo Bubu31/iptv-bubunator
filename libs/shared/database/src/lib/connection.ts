@@ -1,7 +1,8 @@
 /**
  * Database connection and initialization for IPTVnator
  * Uses Drizzle ORM with better-sqlite3
- * Stores database file under ~/.iptvnator/databases/
+ * Stores database file under ~/.iptvnator/databases/ by default.
+ * E2E tests can override the root with IPTVNATOR_E2E_DATA_DIR.
  *
  * Provides two connection modes:
  * - Full access (for electron-backend): creates tables, read-write
@@ -11,29 +12,53 @@
 import Database from 'better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import * as schema from './schema';
+import { getIptvnatorDatabasePath } from './path-utils';
 
 export type DatabaseInstance = BetterSQLite3Database<typeof schema>;
+
+const TRACE_ENV_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
 let db: DatabaseInstance | null = null;
 let sqlite: Database.Database | null = null;
 let initPromise: Promise<DatabaseInstance> | null = null;
 
+function readTraceFlag(name: string): boolean {
+    const value = process.env[name]?.trim().toLowerCase();
+    return value ? TRACE_ENV_TRUE_VALUES.has(value) : false;
+}
+
+function isSqlTraceEnabled(): boolean {
+    return (
+        readTraceFlag('IPTVNATOR_TRACE_STARTUP') ||
+        readTraceFlag('IPTVNATOR_TRACE_DB') ||
+        readTraceFlag('IPTVNATOR_TRACE_SQL')
+    );
+}
+
+function compactSqlForTrace(sql: string): string {
+    const compactSql = sql.replace(/\s+/g, ' ').trim();
+    return compactSql.length <= 180
+        ? compactSql
+        : `${compactSql.slice(0, 177)}...`;
+}
+
+function traceSql(scope: string, message: string, payload?: unknown): void {
+    if (payload === undefined) {
+        console.log(`[IPTVnator Trace][${scope}] ${message}`);
+        return;
+    }
+
+    console.log(
+        `[IPTVnator Trace][${scope}] ${message} ${JSON.stringify(payload)}`
+    );
+}
+
 /**
  * Get the database file path
  */
 export function getDatabasePath(): string {
-    const dbDir = join(homedir(), '.iptvnator', 'databases');
-
-    // Ensure the directory exists
-    if (!existsSync(dbDir)) {
-        mkdirSync(dbDir, { recursive: true });
-    }
-
-    return join(dbDir, 'iptvnator.db');
+    return getIptvnatorDatabasePath();
 }
 
 /**
@@ -56,7 +81,20 @@ const CREATE_TABLE_STATEMENTS = [
       autoRefresh INTEGER DEFAULT 0,
       macAddress TEXT,
       url TEXT,
+      portal_url TEXT,
+      count INTEGER,
+      import_date TEXT,
+      update_date INTEGER,
+      position INTEGER,
+      favorites TEXT,
+      recently_viewed TEXT,
+      payload TEXT,
       last_usage TEXT
+  )`,
+    `CREATE TABLE IF NOT EXISTS app_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now'))
   )`,
     `CREATE TABLE IF NOT EXISTS categories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,6 +112,10 @@ const CREATE_TABLE_STATEMENTS = [
       rating TEXT,
       added TEXT,
       poster_url TEXT,
+      epg_channel_id TEXT,
+      tv_archive INTEGER,
+      tv_archive_duration INTEGER,
+      direct_source TEXT,
       xtream_id INTEGER NOT NULL,
       type TEXT NOT NULL CHECK (type IN ('live', 'movie', 'series')),
       FOREIGN KEY (category_id) REFERENCES categories (id) ON DELETE CASCADE
@@ -99,6 +141,7 @@ const CREATE_TABLE_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_categories_playlist ON categories(playlist_id)`,
     `CREATE INDEX IF NOT EXISTS idx_content_title ON content(title)`,
     `CREATE INDEX IF NOT EXISTS idx_content_xtream ON content(xtream_id)`,
+    `CREATE INDEX IF NOT EXISTS idx_content_type_added ON content(type, added)`,
     `CREATE INDEX IF NOT EXISTS idx_categories_type ON categories(type)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS favorites_content_playlist_unique ON favorites(content_id, playlist_id)`,
     `CREATE INDEX IF NOT EXISTS favorites_playlist_idx ON favorites(playlist_id)`,
@@ -133,6 +176,7 @@ const CREATE_TABLE_STATEMENTS = [
     `CREATE INDEX IF NOT EXISTS idx_epg_channels_name ON epg_channels(display_name)`,
     `CREATE INDEX IF NOT EXISTS idx_epg_programs_channel ON epg_programs(channel_id)`,
     `CREATE INDEX IF NOT EXISTS idx_epg_programs_start ON epg_programs(start)`,
+    `CREATE INDEX IF NOT EXISTS idx_epg_programs_stop ON epg_programs(stop)`,
     `CREATE INDEX IF NOT EXISTS idx_epg_programs_time_range ON epg_programs(channel_id, start, stop)`,
     // FTS5 virtual table for full-text search on EPG programs
     `CREATE VIRTUAL TABLE IF NOT EXISTS epg_programs_fts USING fts5(
@@ -157,15 +201,80 @@ const CREATE_TABLE_STATEMENTS = [
       INSERT INTO epg_programs_fts(rowid, title, description, category)
       VALUES (new.id, new.title, new.description, new.category);
   END`,
+    // Playback Positions table
+    `CREATE TABLE IF NOT EXISTS playback_positions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      playlist_id TEXT NOT NULL,
+      content_xtream_id INTEGER NOT NULL,
+      content_type TEXT NOT NULL CHECK (content_type IN ('vod', 'episode')),
+      series_xtream_id INTEGER,
+      season_number INTEGER,
+      episode_number INTEGER,
+      position_seconds INTEGER NOT NULL DEFAULT 0,
+      duration_seconds INTEGER,
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE
+  )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS playback_positions_content_playlist_unique ON playback_positions(content_xtream_id, playlist_id, content_type)`,
+    `CREATE INDEX IF NOT EXISTS playback_positions_playlist_idx ON playback_positions(playlist_id)`,
+    `CREATE INDEX IF NOT EXISTS playback_positions_series_idx ON playback_positions(series_xtream_id)`,
+    `CREATE INDEX IF NOT EXISTS playback_positions_updated_idx ON playback_positions(updated_at)`,
+    // Downloads table
+    `CREATE TABLE IF NOT EXISTS downloads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      playlist_id TEXT NOT NULL,
+      xtream_id INTEGER NOT NULL,
+      content_type TEXT NOT NULL CHECK (content_type IN ('vod', 'episode')),
+      series_xtream_id INTEGER,
+      season_number INTEGER,
+      episode_number INTEGER,
+      title TEXT NOT NULL,
+      url TEXT NOT NULL,
+      file_name TEXT,
+      file_path TEXT,
+      poster_url TEXT,
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'downloading', 'completed', 'failed', 'canceled')),
+      bytes_downloaded INTEGER DEFAULT 0,
+      total_bytes INTEGER,
+      error_message TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE
+  )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS downloads_xtream_playlist_unique ON downloads(xtream_id, playlist_id, content_type)`,
+    `CREATE INDEX IF NOT EXISTS downloads_playlist_idx ON downloads(playlist_id)`,
+    `CREATE INDEX IF NOT EXISTS downloads_status_idx ON downloads(status)`,
 ];
 
 /**
  * Migration statements that may fail if already applied
  * These are run with try-catch to handle existing columns
  */
-const MIGRATION_STATEMENTS = [
+const COLUMN_MIGRATION_STATEMENTS = [
     // v1.0.0 -> v1.1.0: Add hidden column to categories for category management
     `ALTER TABLE categories ADD COLUMN hidden INTEGER DEFAULT 0`,
+    // v1.1.0 -> v1.2.0: Add playlist metadata/payload columns for M3U + unified playlist persistence
+    `ALTER TABLE playlists ADD COLUMN portal_url TEXT`,
+    `ALTER TABLE playlists ADD COLUMN count INTEGER`,
+    `ALTER TABLE playlists ADD COLUMN import_date TEXT`,
+    `ALTER TABLE playlists ADD COLUMN update_date INTEGER`,
+    `ALTER TABLE playlists ADD COLUMN position INTEGER`,
+    `ALTER TABLE playlists ADD COLUMN favorites TEXT`,
+    `ALTER TABLE playlists ADD COLUMN recently_viewed TEXT`,
+    `ALTER TABLE playlists ADD COLUMN payload TEXT`,
+    // v1.2.0 -> v1.3.0: Add position column to favorites for global favorites ordering
+    `ALTER TABLE favorites ADD COLUMN position INTEGER DEFAULT 0`,
+    // v1.4.0 -> v1.5.0: Preserve Xtream live metadata required for EPG/catch-up
+    `ALTER TABLE content ADD COLUMN epg_channel_id TEXT`,
+    `ALTER TABLE content ADD COLUMN tv_archive INTEGER`,
+    `ALTER TABLE content ADD COLUMN tv_archive_duration INTEGER`,
+    `ALTER TABLE content ADD COLUMN direct_source TEXT`,
+];
+
+const INDEX_MIGRATION_STATEMENTS = [
+    // v1.3.0 -> v1.4.0: Prevent duplicate Xtream categories/content rows
+    `CREATE UNIQUE INDEX IF NOT EXISTS categories_playlist_type_xtream_unique ON categories(playlist_id, type, xtream_id)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS content_category_type_xtream_unique ON content(category_id, type, xtream_id)`,
 ];
 
 /**
@@ -177,19 +286,196 @@ function createTables(sqliteDb: Database.Database): void {
     }
 }
 
+function isDuplicateColumnError(error: unknown): boolean {
+    const message =
+        typeof error === 'object' && error !== null && 'message' in error
+            ? String((error as { message?: unknown }).message ?? '')
+            : '';
+
+    return message.toLowerCase().includes('duplicate column name');
+}
+
+type XtreamCategoryDuplicateGroup = {
+    playlistId: string;
+    type: 'live' | 'movies' | 'series';
+    xtreamId: number;
+};
+
+type XtreamCategoryCandidate = {
+    id: number;
+    hidden: number;
+    contentCount: number;
+};
+
+type XtreamContentDuplicateGroup = {
+    categoryId: number;
+    type: 'live' | 'movie' | 'series';
+    xtreamId: number;
+};
+
+type XtreamContentCandidate = {
+    id: number;
+};
+
+function deduplicateXtreamCache(sqliteDb: Database.Database): void {
+    const executeCleanup = sqliteDb.transaction(() => {
+        const duplicateCategoryGroups = sqliteDb
+            .prepare(
+                `SELECT
+                    playlist_id AS playlistId,
+                    type,
+                    xtream_id AS xtreamId
+                 FROM categories
+                 GROUP BY playlist_id, type, xtream_id
+                 HAVING COUNT(*) > 1`
+            )
+            .all() as XtreamCategoryDuplicateGroup[];
+
+        const selectCategoryCandidates = sqliteDb.prepare(
+            `SELECT
+                categories.id AS id,
+                COALESCE(categories.hidden, 0) AS hidden,
+                COUNT(content.id) AS contentCount
+             FROM categories
+             LEFT JOIN content ON content.category_id = categories.id
+             WHERE categories.playlist_id = ?
+               AND categories.type = ?
+               AND categories.xtream_id = ?
+             GROUP BY categories.id, categories.hidden
+             ORDER BY COUNT(content.id) DESC, COALESCE(categories.hidden, 0) ASC, categories.id ASC`
+        );
+        const updateContentCategory = sqliteDb.prepare(
+            `UPDATE content SET category_id = ? WHERE category_id = ?`
+        );
+        const deleteCategory = sqliteDb.prepare(
+            `DELETE FROM categories WHERE id = ?`
+        );
+
+        for (const group of duplicateCategoryGroups) {
+            const candidates = selectCategoryCandidates.all(
+                group.playlistId,
+                group.type,
+                group.xtreamId
+            ) as XtreamCategoryCandidate[];
+            const canonicalCategoryId = candidates[0]?.id;
+
+            if (!canonicalCategoryId) {
+                continue;
+            }
+
+            for (const candidate of candidates.slice(1)) {
+                updateContentCategory.run(canonicalCategoryId, candidate.id);
+                deleteCategory.run(candidate.id);
+            }
+        }
+
+        const duplicateContentGroups = sqliteDb
+            .prepare(
+                `SELECT
+                    category_id AS categoryId,
+                    type,
+                    xtream_id AS xtreamId
+                 FROM content
+                 GROUP BY category_id, type, xtream_id
+                 HAVING COUNT(*) > 1`
+            )
+            .all() as XtreamContentDuplicateGroup[];
+
+        const selectContentCandidates = sqliteDb.prepare(
+            `SELECT id
+             FROM content
+             WHERE category_id = ?
+               AND type = ?
+               AND xtream_id = ?
+             ORDER BY id ASC`
+        );
+        const moveFavorites = sqliteDb.prepare(
+            `INSERT INTO favorites (content_id, playlist_id, added_at, position)
+             SELECT ?, playlist_id, added_at, COALESCE(position, 0)
+             FROM favorites
+             WHERE content_id = ?
+             ON CONFLICT(content_id, playlist_id) DO NOTHING`
+        );
+        const deleteFavorites = sqliteDb.prepare(
+            `DELETE FROM favorites WHERE content_id = ?`
+        );
+        const moveRecentlyViewed = sqliteDb.prepare(
+            `INSERT INTO recently_viewed (content_id, playlist_id, viewed_at)
+             SELECT ?, playlist_id, viewed_at
+             FROM recently_viewed
+             WHERE content_id = ?
+             ON CONFLICT(content_id, playlist_id) DO UPDATE SET
+                viewed_at = CASE
+                    WHEN excluded.viewed_at > recently_viewed.viewed_at
+                        THEN excluded.viewed_at
+                    ELSE recently_viewed.viewed_at
+                END`
+        );
+        const deleteRecentlyViewed = sqliteDb.prepare(
+            `DELETE FROM recently_viewed WHERE content_id = ?`
+        );
+        const deleteContent = sqliteDb.prepare(`DELETE FROM content WHERE id = ?`);
+
+        for (const group of duplicateContentGroups) {
+            const candidates = selectContentCandidates.all(
+                group.categoryId,
+                group.type,
+                group.xtreamId
+            ) as XtreamContentCandidate[];
+            const canonicalContentId = candidates[0]?.id;
+
+            if (!canonicalContentId) {
+                continue;
+            }
+
+            for (const candidate of candidates.slice(1)) {
+                moveFavorites.run(canonicalContentId, candidate.id);
+                deleteFavorites.run(candidate.id);
+                moveRecentlyViewed.run(canonicalContentId, candidate.id);
+                deleteRecentlyViewed.run(candidate.id);
+                deleteContent.run(candidate.id);
+            }
+        }
+    });
+
+    executeCleanup();
+}
+
+function runMigrationStatements(
+    sqliteDb: Database.Database,
+    statements: string[]
+): void {
+    for (const stmt of statements) {
+        try {
+            sqliteDb.exec(stmt);
+        } catch (error) {
+            // Ignore idempotent ALTER TABLE errors on existing columns.
+            if (isDuplicateColumnError(error)) {
+                continue;
+            }
+
+            const compactStmt = stmt.replace(/\s+/g, ' ').trim();
+            const message =
+                typeof error === 'object' &&
+                error !== null &&
+                'message' in error
+                    ? String((error as { message?: unknown }).message ?? error)
+                    : String(error);
+
+            console.warn(
+                `Migration failed (continuing): ${compactStmt} :: ${message}`
+            );
+        }
+    }
+}
+
 /**
  * Run migrations that may fail if already applied
  */
 function runMigrations(sqliteDb: Database.Database): void {
-    for (const stmt of MIGRATION_STATEMENTS) {
-        try {
-            sqliteDb.exec(stmt);
-        } catch (error) {
-            // Log and ignore errors for migrations that may have already been applied
-            // (e.g., "duplicate column name" for ALTER TABLE ADD COLUMN)
-            console.debug('Migration already applied or failed:', error);
-        }
-    }
+    runMigrationStatements(sqliteDb, COLUMN_MIGRATION_STATEMENTS);
+    deduplicateXtreamCache(sqliteDb);
+    runMigrationStatements(sqliteDb, INDEX_MIGRATION_STATEMENTS);
 }
 
 export interface DatabaseOptions {
@@ -214,10 +500,31 @@ export async function initDatabase(
 
     initPromise = (async () => {
         const filePath = getDatabasePath();
-        sqlite = new Database(filePath, { readonly });
+        sqlite = new Database(filePath, {
+            readonly,
+            verbose: isSqlTraceEnabled()
+                ? (sql: string) => {
+                      traceSql('sql-main', 'query', {
+                          sql: compactSqlForTrace(sql),
+                      });
+                  }
+                : undefined,
+        });
+
+        if (isSqlTraceEnabled()) {
+            traceSql('sql-main', 'open', {
+                filePath,
+                readonly,
+            });
+        }
 
         // Enable foreign keys
         sqlite.pragma('foreign_keys = ON');
+        sqlite.pragma('busy_timeout = 5000');
+
+        if (!readonly) {
+            sqlite.pragma('journal_mode = WAL');
+        }
 
         // Create tables only for read-write connections
         if (!readonly && !skipTableCreation) {
@@ -259,6 +566,11 @@ export async function getReadOnlyDatabase(): Promise<DatabaseInstance> {
 export function closeDatabase(): void {
     if (sqlite) {
         sqlite.close();
+
+        if (isSqlTraceEnabled()) {
+            traceSql('sql-main', 'close');
+        }
+
         sqlite = null;
         db = null;
         initPromise = null;

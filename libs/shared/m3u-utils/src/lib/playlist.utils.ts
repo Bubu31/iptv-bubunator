@@ -1,6 +1,5 @@
 import {
     Channel,
-    GLOBAL_FAVORITES_PLAYLIST_ID,
     ParsedPlaylist,
     ParsedPlaylistItem,
     Playlist,
@@ -39,11 +38,12 @@ export function createFavoritesPlaylist(
     channels: Channel[]
 ): Partial<Playlist> {
     return {
-        _id: GLOBAL_FAVORITES_PLAYLIST_ID,
+        _id: 'global-favorites',
         count: channels.length,
         playlist: {
             items: channels,
         },
+        favorites: channels.map((channel) => channel.url),
         filename: 'Global favorites',
     };
 }

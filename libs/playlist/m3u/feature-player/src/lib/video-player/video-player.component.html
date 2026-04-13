@@ -1,0 +1,98 @@
+<div
+    class="sidebar"
+    appResizable
+    [minWidth]="sidebarMinWidth"
+    [maxWidth]="sidebarMaxWidth"
+    [defaultWidth]="sidebarWidth()"
+    [style.width.px]="sidebarWidth()"
+    [storageKey]="sidebarStorageKey()"
+    (widthChange)="onSidebarWidthChange($event)"
+    (resizeEnd)="onSidebarResizeEnd($event)"
+>
+    @defer {
+        <app-sidebar
+            [channels]="(channels$ | async)!"
+            [channelsLoading]="channelsLoading()"
+            [showPlaylistHeader]="!isWorkspaceLayout"
+            [activeView]="activeView()"
+            [sidebarWidth]="sidebarWidth()"
+            (sidebarWidthRequested)="onGroupedSidebarWidthRequested($event)"
+            (sidebarWidthRequestEnded)="onGroupedSidebarWidthRequestEnded($event)"
+        />
+    } @loading {
+        <app-channel-list-loading-state [view]="activeView()" />
+    } @placeholder {
+        <app-channel-list-loading-state [view]="activeView()" />
+    }
+</div>
+
+<div class="content-container">
+    @if (activeChannel(); as activeChannel) {
+        @let playbackTarget = playbackChannel();
+        @if (activeChannel.radio === 'true' || shouldShowInlinePlayer(activeChannel)) {
+            <div class="video-player">
+                @if (activeChannel.radio === 'true') {
+                    <app-audio-player
+                        [url]="activeChannel.url"
+                        [icon]="activeChannel?.tvg?.logo!"
+                        [channelName]="activeChannel.name || activeChannel?.tvg?.name || ''"
+                    />
+                } @else {
+                    @if (playerSettings.player === 'videojs') {
+                        <app-vjs-player
+                            [options]="{
+                                sources: [
+                                    {
+                                        src:
+                                            playbackTarget?.url +
+                                            playbackTarget?.epgParams,
+                                        type: 'application/x-mpegURL',
+                                    },
+                                ],
+                            }"
+                            [volume]="volume"
+                            [class.hide-captions]="!playerSettings.showCaptions"
+                        />
+                    }
+                    @if (playerSettings.player === 'html5') {
+                        <app-html-video-player
+                            [channel]="playbackTarget!"
+                            [volume]="volume"
+                            [showCaptions]="playerSettings.showCaptions!"
+                        />
+                    }
+                    @if (playerSettings.player === 'artplayer') {
+                        <app-art-player
+                            [channel]="playbackTarget!"
+                            [volume]="volume"
+                            [showCaptions]="playerSettings.showCaptions!"
+                        />
+                    }
+                }
+            </div>
+        }
+
+        @if (activeChannel.radio !== 'true') {
+            <div class="epg">
+                <div class="epg-content">
+                    <app-epg-list
+                        [archivePlaybackAvailable]="archivePlaybackAvailable()"
+                    />
+                </div>
+            </div>
+        }
+
+        @if (showChannelNumberOverlay) {
+            <div class="channel-number-overlay">
+                <div class="channel-number-display">
+                    {{ channelNumberInput }}
+                </div>
+            </div>
+        }
+    } @else {
+        <app-portal-empty-state
+            icon="live_tv"
+            [message]="'CHANNELS.SELECT_CHANNEL_PLAYBACK' | translate"
+        />
+    }
+</div>

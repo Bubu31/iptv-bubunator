@@ -1,5 +1,5 @@
 import { ScrollingModule } from '@angular/cdk/scrolling';
-import { NgIf } from '@angular/common';
+
 import {
     ChangeDetectionStrategy,
     Component,
@@ -15,27 +15,28 @@ import { MatInputModule } from '@angular/material/input';
 import { MatListModule } from '@angular/material/list';
 import { FilterPipe } from '@iptvnator/pipes';
 import { TranslateModule } from '@ngx-translate/core';
+import { WebPlayerViewComponent } from '@iptvnator/ui/playback';
+import { ResizableDirective } from 'components';
 import { EpgItem, VideoPlayer, XtreamItem } from 'shared-interfaces';
 import { EpgViewComponent } from '../epg-view/epg-view.component';
-import { WebPlayerViewComponent } from '../web-player-view/web-player-view.component';
 
 @Component({
     selector: 'app-live-stream-layout',
     templateUrl: './live-stream-layout.component.html',
     styleUrls: ['./live-stream-layout.component.scss'],
     imports: [
-        EpgViewComponent,
-        FilterPipe,
-        FormsModule,
-        MatListModule,
-        MatIconModule,
-        MatInputModule,
-        MatFormFieldModule,
-        NgIf,
-        ScrollingModule,
-        WebPlayerViewComponent,
-        TranslateModule,
-    ],
+    EpgViewComponent,
+    FilterPipe,
+    FormsModule,
+    MatListModule,
+    MatIconModule,
+    MatInputModule,
+    MatFormFieldModule,
+    ResizableDirective,
+    ScrollingModule,
+    WebPlayerViewComponent,
+    TranslateModule
+],
     changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LiveStreamLayoutComponent {

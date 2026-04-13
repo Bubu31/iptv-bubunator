@@ -1,0 +1,60 @@
+<div class="channels-list">
+    @if (isSelectedTypeContentLoading()) {
+        <div class="channels-loading-state" aria-live="polite">
+            <div class="channels-loading-state__copy">
+                <div class="channels-loading-state__title">
+                    {{ 'CHANNELS.LOADING' | translate }}
+                </div>
+            </div>
+
+            <div class="channels-loading-state__list" aria-hidden="true">
+                @for (row of loadingRows; track row) {
+                    <div class="channel-skeleton">
+                        <span class="channel-skeleton__logo"></span>
+                        <span class="channel-skeleton__title"></span>
+                        <span class="channel-skeleton__meta"></span>
+                    </div>
+                }
+            </div>
+        </div>
+    } @else if (filteredChannels().length > 0) {
+        <cdk-virtual-scroll-viewport
+            [itemSize]="68"
+            class="scroll-viewport-portals"
+        >
+            <app-channel-list-item
+                *cdkVirtualFor="
+                    let item of filteredChannels();
+                    trackBy: trackBy;
+                    templateCacheSize: 0
+                "
+                [name]="item.title || item.name"
+                [logo]="item.stream_icon ?? item.poster_url"
+                [selected]="
+                    xtreamStore.selectedItem()?.xtream_id === item.xtream_id
+                "
+                [epgProgram]="epgPrograms.get(item.xtream_id) ?? null"
+                [progressPercentage]="
+                    currentProgramsProgress.get(item.xtream_id) ?? 0
+                "
+                [showFavoriteButton]="true"
+                [showProgramInfoButton]="false"
+                [isFavorite]="favorites.get(item.xtream_id) ?? false"
+                (clicked)="playClicked.emit(item)"
+                (favoriteToggled)="toggleFavorite($event, item)"
+            />
+        </cdk-virtual-scroll-viewport>
+    } @else {
+        <div class="empty-search-state">
+            <div class="empty-icon-wrapper">
+                <mat-icon>search_off</mat-icon>
+            </div>
+            <h3>{{ 'CHANNELS.NO_CHANNELS_FOUND' | translate }}</h3>
+            @if (searchTermInput()) {
+                <p>
+                    {{ 'CHANNELS.TRY_DIFFERENT_SEARCH' | translate }}
+                </p>
+            }
+        </div>
+    }
+</div>

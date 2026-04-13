@@ -1,6 +1,5 @@
 import { inject, Injectable } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { Params } from '@angular/router';
 import { Store } from '@ngrx/store';
 import { TranslateService } from '@ngx-translate/core';
 import { PlaylistActions } from 'm3u-state';
@@ -11,10 +10,32 @@ import {
     Playlist,
     PLAYLIST_PARSE_BY_URL,
     PLAYLIST_UPDATE,
-    XTREAM_RESPONSE,
     XTREAM_REQUEST,
+    XTREAM_RESPONSE,
+    XtreamCodeActions,
 } from 'shared-interfaces';
 import { AppConfig } from '../../environments/environment';
+import {
+    createPortalDebugRequestContext,
+    logPortalDebugEvent,
+} from '@iptvnator/portal/shared/util';
+
+interface PlayerLaunchPayload {
+    readonly headers?: Record<string, string>;
+    readonly origin?: string;
+    readonly referer?: string;
+    readonly startTime?: number;
+    readonly thumbnail?: string;
+    readonly title?: string;
+    readonly url: string;
+    readonly ['user-agent']?: string;
+    readonly contentInfo?: unknown;
+}
+
+interface ErrorStatus {
+    readonly message?: string;
+    readonly status?: number;
+}
 
 @Injectable({
     providedIn: 'root',
@@ -24,11 +45,21 @@ export class ElectronService extends DataService {
     private readonly snackBar = inject(MatSnackBar);
     private readonly store = inject(Store);
     private readonly translateService = inject(TranslateService);
+    private readonly silentXtreamActions = new Set<string>([
+        XtreamCodeActions.GetAccountInfo,
+        XtreamCodeActions.GetLiveCategories,
+        XtreamCodeActions.GetVodCategories,
+        XtreamCodeActions.GetSeriesCategories,
+        XtreamCodeActions.GetShortEpg,
+        XtreamCodeActions.GetSimpleDataTable,
+        XtreamCodeActions.GetSimpleDateTable,
+    ]);
 
     constructor() {
         super();
         console.log('Electron service initialized...');
         this.setupPlayerErrorListener();
+        this.setupPortalDebugListener();
     }
 
     private setupPlayerErrorListener() {
@@ -54,14 +85,42 @@ export class ElectronService extends DataService {
         }
     }
 
+    private setupPortalDebugListener() {
+        const onPortalDebugEvent = (
+            window.electron as {
+                onPortalDebugEvent?: (
+                    callback: (
+                        event: Parameters<typeof logPortalDebugEvent>[0]
+                    ) => void
+                ) => void;
+            }
+        ).onPortalDebugEvent;
+
+        if (AppConfig.production || !onPortalDebugEvent) {
+            return;
+        }
+
+        onPortalDebugEvent((event) => {
+            logPortalDebugEvent(
+                event as Parameters<typeof logPortalDebugEvent>[0]
+            );
+        });
+    }
+
     getAppVersion(): string {
         return AppConfig.version;
     }
 
-    async sendIpcEvent(type: string, payload?: unknown) {
+    async sendIpcEvent<T = unknown>(
+        type: string,
+        payload?: unknown
+    ): Promise<T> {
         if (type === PLAYLIST_PARSE_BY_URL) {
             this.fetchM3uPlaylistFromUrl(payload);
-        } else if (type === PLAYLIST_UPDATE) {
+            return undefined as T;
+        }
+
+        if (type === PLAYLIST_UPDATE) {
             this.updateM3uPlaylistFromFile(
                 payload as {
                     id: string;
@@ -70,31 +129,42 @@ export class ElectronService extends DataService {
                     title: string;
                 }
             );
-        } else if (type === XTREAM_REQUEST) {
-            return await this.forwardXtreamRequest(
+            return undefined as T;
+        }
+
+        if (type === XTREAM_REQUEST) {
+            return (await this.forwardXtreamRequest(
                 payload as { url: string; params: Record<string, string> }
-            );
-        } else if (type === 'STALKER_REQUEST') {
-            return this.fetchStalkerData(
+            )) as T;
+        }
+
+        if (type === 'STALKER_REQUEST') {
+            return (await this.fetchStalkerData(
                 payload as {
                     url: string;
                     macAddress: string;
                     params: Record<string, string>;
                 }
-            );
-        } else if (type === 'OPEN_MPV_PLAYER') {
-            const data = payload as any;
+            )) as T;
+        }
+
+        if (type === 'OPEN_MPV_PLAYER') {
+            const data = payload as PlayerLaunchPayload;
             try {
-                return await window.electron.openInMpv(
+                return (await window.electron.openInMpv(
                     data.url,
                     data.title ?? '',
+                    data.thumbnail ?? '',
                     data['user-agent'] ?? undefined,
                     data.referer ?? undefined,
-                    data.origin ?? undefined
-                );
-                /* thumbnail: data.thumbnail ?? '', */
-            } catch (error: any) {
-                const errorMessage = error?.message || String(error);
+                    data.origin ?? undefined,
+                    data.contentInfo,
+                    data.startTime,
+                    data.headers ?? undefined
+                )) as T;
+            } catch (error: unknown) {
+                const errorMessage =
+                    this.getErrorDetails(error)?.message ?? String(error);
                 this.snackBar.open(
                     `Error launching MPV: ${errorMessage}`,
                     'Close',
@@ -105,18 +175,25 @@ export class ElectronService extends DataService {
                 console.error('MPV launch error:', error);
                 throw error;
             }
-        } else if (type === 'OPEN_VLC_PLAYER') {
-            const data = payload as any;
+        }
+
+        if (type === 'OPEN_VLC_PLAYER') {
+            const data = payload as PlayerLaunchPayload;
             try {
-                return await window.electron.openInVlc(
+                return (await window.electron.openInVlc(
                     data.url,
                     data.title ?? '',
+                    data.thumbnail ?? '',
                     data['user-agent'] ?? undefined,
                     data.referer ?? undefined,
-                    data.origin ?? undefined
-                );
-            } catch (error: any) {
-                const errorMessage = error?.message || String(error);
+                    data.origin ?? undefined,
+                    data.contentInfo,
+                    data.startTime,
+                    data.headers ?? undefined
+                )) as T;
+            } catch (error: unknown) {
+                const errorMessage =
+                    this.getErrorDetails(error)?.message ?? String(error);
                 this.snackBar.open(
                     `Error launching VLC: ${errorMessage}`,
                     'Close',
@@ -127,7 +204,9 @@ export class ElectronService extends DataService {
                 console.error('VLC launch error:', error);
                 throw error;
             }
-        } else if (type === AUTO_UPDATE_PLAYLISTS) {
+        }
+
+        if (type === AUTO_UPDATE_PLAYLISTS) {
             const data = payload as Playlist[];
             const playlists = await window.electron.autoUpdatePlaylists(data);
             this.store.dispatch(
@@ -142,24 +221,40 @@ export class ElectronService extends DataService {
                 null,
                 { duration: 2000 }
             );
-        } else {
-            console.log('Unknown type', type);
+            return playlists as T;
         }
+
+        console.log('Unknown type', type);
+        return undefined as T;
     }
 
     private async fetchStalkerData(payload: {
         url: string;
         macAddress: string;
         params: Record<string, string>;
+        requestId?: string;
+        token?: string;
+        serialNumber?: string;
     }) {
+        const context = createPortalDebugRequestContext({
+            provider: 'stalker',
+            operation: payload.params?.action ?? 'unknown',
+            transport: 'electron-renderer',
+            request: payload,
+        });
+
         try {
             // Use Electron IPC to make the Stalker request
-            const response = await window.electron.stalkerRequest(payload);
+            const response = await window.electron.stalkerRequest({
+                ...payload,
+                requestId: context.requestId,
+            });
             return response;
-        } catch (err) {
+        } catch (err: unknown) {
+            const errorInfo = this.getErrorDetails(err);
             console.error('Stalker request error:', err);
             this.snackBar.open(
-                `Error: ${err.message ?? ' Not found'}, status: ${err.status ?? 404}`,
+                `Error: ${errorInfo?.message ?? ' Not found'}, status: ${errorInfo?.status ?? 404}`,
                 'Close',
                 {
                     duration: 5000,
@@ -170,14 +265,51 @@ export class ElectronService extends DataService {
     }
 
     private async fetchM3uPlaylistFromUrl(payload: Partial<Playlist>) {
-        window.electron.fetchPlaylistByUrl(payload.url).then((result) => {
-            this.store.dispatch(
-                PlaylistActions.handleAddingPlaylistByUrl({
-                    isTemporary: !!payload?.isTemporary,
-                    playlist: result,
-                })
-            );
-        });
+        const title = payload.title?.trim() || undefined;
+
+        window.electron
+            .fetchPlaylistByUrl(payload.url, title)
+            .then((result) => {
+                this.store.dispatch(
+                    PlaylistActions.handleAddingPlaylistByUrl({
+                        isTemporary: !!payload?.isTemporary,
+                        playlist: result,
+                    })
+                );
+            })
+            .catch((error: unknown) => {
+                const statusCode = this.extractHttpStatusCode(error);
+                let messageKey = 'HOME.URL_UPLOAD.ERROR_FETCH_FAILED';
+                if (statusCode === 403) {
+                    messageKey = 'HOME.URL_UPLOAD.ERROR_403';
+                } else if (statusCode === 404) {
+                    messageKey = 'HOME.URL_UPLOAD.ERROR_404';
+                } else if (statusCode === 401) {
+                    messageKey = 'HOME.URL_UPLOAD.ERROR_401';
+                }
+                this.snackBar.open(
+                    this.translateService.instant(messageKey),
+                    this.translateService.instant('CLOSE'),
+                    { duration: 5000 }
+                );
+            });
+    }
+
+    private extractHttpStatusCode(error: unknown): number | null {
+        if (
+            error &&
+            typeof error === 'object' &&
+            'response' in error &&
+            error.response &&
+            typeof error.response === 'object' &&
+            'status' in error.response
+        ) {
+            return error.response.status as number;
+        }
+        // Parse status from error message string (IPC serialization)
+        const msg = String((error as { message?: string })?.message ?? error);
+        const match = msg.match(/status code (\d{3})/);
+        return match ? parseInt(match[1], 10) : null;
     }
 
     private async updateM3uPlaylistFromFile(data: {
@@ -186,27 +318,26 @@ export class ElectronService extends DataService {
         filePath?: string;
         title: string;
     }) {
-        let methodToCall = null;
-        if (data.url && !data.filePath) {
-            // fetch from url
-            methodToCall = window.electron.fetchPlaylistByUrl(
-                data.url,
-                data.title
-            );
-        } else if (data.filePath && !data.url) {
-            // update from file path
-            methodToCall = window.electron.updatePlaylistFromFilePath(
-                data.filePath,
-                data.title
-            );
-        } else {
-            console.error(
-                'Either url or filePath must be provided, but not both.'
-            );
-            return;
-        }
+        try {
+            let playlistObject: Playlist;
+            if (data.url && !data.filePath) {
+                playlistObject = await window.electron.fetchPlaylistByUrl(
+                    data.url,
+                    data.title
+                );
+            } else if (data.filePath && !data.url) {
+                playlistObject =
+                    await window.electron.updatePlaylistFromFilePath(
+                        data.filePath,
+                        data.title
+                    );
+            } else {
+                console.error(
+                    'Either url or filePath must be provided, but not both.'
+                );
+                return;
+            }
 
-        methodToCall.then((playlistObject) => {
             this.store.dispatch(
                 PlaylistActions.updatePlaylist({
                     playlist: {
@@ -224,7 +355,66 @@ export class ElectronService extends DataService {
                 null,
                 { duration: 2000 }
             );
-        });
+        } catch (error: unknown) {
+            console.error('Playlist refresh error:', error);
+            this.snackBar.open(
+                this.getPlaylistRefreshErrorMessage(error, data),
+                this.translateService.instant('CLOSE'),
+                { duration: 5000 }
+            );
+        }
+    }
+
+    private getPlaylistRefreshErrorMessage(
+        error: unknown,
+        data: { url?: string; filePath?: string }
+    ): string {
+        if (data.filePath) {
+            const errorMessage = String(
+                this.getErrorDetails(error)?.message ?? error ?? ''
+            );
+
+            if (
+                /(ENOENT|no such file or directory|not found)/i.test(
+                    errorMessage
+                )
+            ) {
+                return this.translateWithFallback(
+                    'HOME.PLAYLISTS.PLAYLIST_UPDATE_FILE_NOT_FOUND',
+                    'Playlist refresh failed. The local file is no longer available. Check the file path or re-import the playlist.'
+                );
+            }
+
+            if (/(EACCES|EPERM|permission denied)/i.test(errorMessage)) {
+                return this.translateWithFallback(
+                    'HOME.PLAYLISTS.PLAYLIST_UPDATE_FILE_ACCESS_ERROR',
+                    'Playlist refresh failed. The app can no longer access the local file.'
+                );
+            }
+
+            return this.translateService.instant(
+                'HOME.PLAYLISTS.PLAYLIST_UPDATE_ERROR'
+            );
+        }
+
+        const statusCode = this.extractHttpStatusCode(error);
+        if (statusCode === 404) {
+            return this.translateService.instant('HOME.URL_UPLOAD.ERROR_404');
+        }
+        if (statusCode === 403) {
+            return this.translateService.instant('HOME.URL_UPLOAD.ERROR_403');
+        }
+        if (statusCode === 401) {
+            return this.translateService.instant('HOME.URL_UPLOAD.ERROR_401');
+        }
+        return this.translateService.instant(
+            'HOME.URL_UPLOAD.ERROR_FETCH_FAILED'
+        );
+    }
+
+    private translateWithFallback(key: string, fallback: string): string {
+        const translated = this.translateService.instant(key);
+        return translated === key ? fallback : translated;
     }
 
     /* private getErrorMessageByStatusCode(status: number) {
@@ -246,10 +436,23 @@ export class ElectronService extends DataService {
     private async forwardXtreamRequest(payload: {
         url: string;
         params: Record<string, string>;
+        requestId?: string;
+        sessionId?: string;
+        suppressErrorLog?: boolean;
     }) {
+        const context = createPortalDebugRequestContext({
+            provider: 'xtream',
+            operation: payload.params?.action ?? 'unknown',
+            transport: 'electron-renderer',
+            request: payload,
+        });
+
         try {
             // Use Electron IPC to make the Xtream request
-            const response = await window.electron.xtreamRequest(payload);
+            const response = await window.electron.xtreamRequest({
+                ...payload,
+                requestId: context.requestId,
+            });
 
             const result = {
                 type: XTREAM_RESPONSE,
@@ -258,25 +461,28 @@ export class ElectronService extends DataService {
             };
             window.postMessage(result);
             return result;
-        } catch (error: any) {
-            const isStatusCheck = payload.params?.action === 'get_account_info';
+        } catch (error: unknown) {
+            const action = payload.params?.action;
+            const isSilentAction =
+                payload.suppressErrorLog === true ||
+                (action ? this.silentXtreamActions.has(action) : false);
+            const normalizedMessage = this.getReadableXtreamErrorMessage(error);
+            const errorInfo = this.getErrorDetails(error);
 
             // Log error to console
-            if (isStatusCheck) {
+            if (isSilentAction) {
                 console.log(
-                    'Portal status check failed - portal may be unavailable:',
-                    error.message || error
+                    `Background Xtream action failed (${action ?? 'unknown'}):`,
+                    normalizedMessage
                 );
             } else {
-                console.error('Xtream request error:', error.message);
+                console.error('Xtream request error:', normalizedMessage);
             }
 
-            // Only show snackbar for non-status-check requests
-            if (!isStatusCheck) {
+            // Only show snackbar for user-triggered Xtream requests
+            if (!isSilentAction) {
                 this.snackBar.open(
-                    `Error: ${error.message ?? 'Failed to connect to Xtream server'}, status: ${
-                        error.status ?? 500
-                    }`,
+                    `Xtream request failed: ${normalizedMessage}`,
                     'Close',
                     {
                         duration: 5000,
@@ -286,10 +492,61 @@ export class ElectronService extends DataService {
 
             return {
                 type: ERROR,
-                status: error.status ?? 500,
-                message: error.message ?? 'Failed to connect to Xtream server',
+                status: errorInfo?.status ?? 500,
+                message: normalizedMessage,
             };
         }
+    }
+
+    private getReadableXtreamErrorMessage(error: unknown): string {
+        const fallback = 'Failed to connect to Xtream server';
+        if (!error) {
+            return fallback;
+        }
+
+        const maybeError = error as {
+            message?: unknown;
+            statusText?: unknown;
+            status?: unknown;
+            error?: unknown;
+        };
+
+        if (typeof maybeError.message === 'string') {
+            if (maybeError.message.includes('[object Object]')) {
+                if (typeof maybeError.error === 'string') {
+                    return maybeError.error;
+                }
+                if (
+                    maybeError.error &&
+                    typeof maybeError.error === 'object' &&
+                    'message' in
+                        (maybeError.error as Record<string, unknown>) &&
+                    typeof (maybeError.error as Record<string, unknown>)
+                        .message === 'string'
+                ) {
+                    return (maybeError.error as Record<string, string>).message;
+                }
+                return fallback;
+            }
+            return maybeError.message;
+        }
+
+        if (typeof maybeError.statusText === 'string') {
+            return maybeError.statusText;
+        }
+
+        if (typeof error === 'string') {
+            return error;
+        }
+
+        return fallback;
+    }
+
+    private getErrorDetails(error: unknown): ErrorStatus | null {
+        if (error && typeof error === 'object') {
+            return error as ErrorStatus;
+        }
+        return null;
     }
 
     removeAllListeners(type: string): void {
@@ -309,14 +566,16 @@ export class ElectronService extends DataService {
         window.removeEventListener('message', this.getListenerForCommand(type));
     }
 
-    private getListenerForCommand(command: string): any {
+    private getListenerForCommand(_command: string): EventListener {
+        void _command;
         // This is a placeholder. In a real implementation, you would need to
         // store the actual listener functions to be able to remove them
-        return () => {};
+        return () => undefined;
     }
 
-    listenOn(command: string, callback: (...args: any[]) => void): void {
+    listenOn(command: string, callback: (...args: unknown[]) => void): void {
         // For Electron, use window message events
+        void command;
         window.addEventListener('message', callback);
     }
 

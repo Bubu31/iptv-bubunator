@@ -9,7 +9,7 @@
  <img alt="GitHub Workflow Status" src="https://img.shields.io/github/actions/workflow/status/4gray/iptvnator/build-and-test.yaml?style=for-the-badge&logo=github"> <a href="https://github.com/4gray/iptvnator/releases"><img src="https://img.shields.io/github/downloads/4gray/iptvnator/total?style=for-the-badge&logo=github" alt="Releases"></a> <a href="https://codecov.io/gh/4gray/iptvnator"><img alt="Codecov" src="https://img.shields.io/codecov/c/github/4gray/iptvnator?style=for-the-badge"></a> <a href="https://t.me/iptvnator"><img src="https://img.shields.io/badge/telegram-iptvnator-blue?logo=telegram&style=for-the-badge" alt="Telegram"></a> <a href="https://bsky.app/profile/iptvnator.bsky.social"><img src="https://img.shields.io/badge/bluesky-iptvnator-darkblue?logo=bluesky&style=for-the-badge" alt="Bluesky"></a>
 </p>
 
-<a href="https://t.me/iptvnator">Telegram channel for discussions</a>
+🌐 **[Website](https://4gray.github.io/iptvnator/)** | <a href="https://t.me/iptvnator">Telegram channel for discussions</a> | <a href="https://ko-fi.com/4gray" target="_blank">Buy me a coffee</a> | <a href="https://github.com/sponsors/4gray">GitHub Sponsors</a>
 
 **IPTVnator** is a video player application that provides support for IPTV playlist playback (m3u, m3u8). The application allows users to import playlists using remote URLs or by uploading files from the local file system. Additionally, it supports EPG information in XMLTV format which can be provided via URL.
 
@@ -21,38 +21,40 @@ The application is a cross-platform, open-source project built with Electron and
 
 ## Features
 
--   M3u and M3u8 playlist support 📺
--   Xtream Code (XC) and Stalker portal (STB) support
--   External player support - MPV, VLC
--   Add playlists from the file system or remote URLs 📂
--   Automatic playlist updates on application startup
--   Channel search functionality 🔍
--   EPG support (TV Guide) with detailed information
--   TV archive/catchup/timeshift functionality
--   Group-based channel list
--   Favorite channels management
--   Global favorites aggregated from all playlists
--   HTML video player with HLS.js support or Video.js-based player
--   Internationalization with support for 16 languages:
-    * Arabic
-    * Moroccan arabic
-    * English
-    * Russian
-    * German
-    * Korean
-    * Spanish
-    * Chinese
-    * Traditional chinese
-    * French
-    * Italian
-    * Turkish
-    * Japanese
-    * Dutch
-    * Belarusian
-    * Polish  
--   Custom "User Agent" header configuration for playlists
--   Light and Dark themes
--   Docker version available for self-hosting
+- M3u and M3u8 playlist support 📺
+- Radio playlist support with dedicated audio player 📻
+- Xtream Code (XC) and Stalker portal (STB) support
+- External player support - MPV, VLC
+- Add playlists from the file system or remote URLs 📂
+- Automatic playlist updates on application startup
+- Channel search functionality 🔍
+- EPG support (TV Guide) with detailed information
+- TV archive/catchup/timeshift functionality
+- Group-based channel list
+- Read-only M3U channel details from the channel context menu
+- Favorite channels management
+- Global favorites aggregated from all playlists
+- HTML video player with HLS.js support or Video.js-based player
+- Internationalization with support for 16 languages:
+    - Arabic
+    - Moroccan arabic
+    - English
+    - Russian
+    - German
+    - Korean
+    - Spanish
+    - Chinese
+    - Traditional chinese
+    - French
+    - Italian
+    - Turkish
+    - Japanese
+    - Dutch
+    - Belarusian
+    - Polish
+- Custom "User Agent" header configuration for playlists
+- Light and Dark themes
+- Docker version available for self-hosting
 
 ## Screenshots:
 
@@ -112,7 +114,7 @@ sudo emerge iptvnator-bin
 
 ### macOS: "App is damaged and can't be opened"
 
-Due to Apple's Gatekeeper security and code signing requirements, you may need to remove the quarantine flag from the downloaded application:
+Older unsigned macOS builds may require removing the quarantine flag from the downloaded application:
 
 ```bash
 xattr -c /Applications/IPTVnator.app
@@ -148,14 +150,14 @@ sudo chmod 4755 chrome-sandbox
 Edit the desktop launcher file to add the `--no-sandbox` flag:
 
 1. Find your desktop file location:
-   - **Ubuntu/Debian**: `~/.local/share/applications/iptvnator.desktop`
-   - **System-wide**: `/usr/share/applications/iptvnator.desktop`
+    - **Ubuntu/Debian**: `~/.local/share/applications/iptvnator.desktop`
+    - **System-wide**: `/usr/share/applications/iptvnator.desktop`
 
 2. Edit the file and modify the `Exec` line:
 
-   ```
-   Exec=iptvnator --no-sandbox %U
-   ```
+    ```
+    Exec=iptvnator --no-sandbox %U
+    ```
 
 3. Save the file and relaunch the application from your application menu.
 
@@ -165,29 +167,89 @@ Alternatively, you can launch IPTVnator from the terminal with the flag:
 iptvnator --no-sandbox
 ```
 
+### GNU/Linux: Wayland startup failure
+
+If IPTVnator exits on GNU/Linux with errors about failing to connect to
+Wayland or initialize the Ozone platform, force X11/XWayland instead:
+
+```bash
+iptvnator --ozone-platform=x11
+```
+
+This workaround is mainly for older or problematic Linux graphics stacks. The
+Snap package already includes this X11 override by default. For AppImage,
+direct binaries, and other Linux package formats, pass the flag manually when
+needed.
+
 ## How to Build and Develop
 
 Requirements:
 
--   Node.js with npm
+- Node.js with pnpm (via Corepack)
 
 1. Clone this repository and install project dependencies:
 
     ```
-    $ npm install
+    $ corepack enable
+    $ pnpm install
     ```
 
 2. Start the application:
     ```
-    $ npm run serve:backend
+    $ pnpm run serve:backend
     ```
 
 This will open the Electron app in a separate window, while the Angular dev server will run at http://localhost:4200.
 
+The equivalent Nx command is:
+
+```
+$ nx serve electron-backend
+```
+
+If you need to debug renderer freezes or GPU/compositor issues in Electron, you
+can disable hardware acceleration for a run:
+
+```
+$ IPTVNATOR_DISABLE_HARDWARE_ACCELERATION=1 pnpm run serve:backend
+```
+
+If you need startup diagnostics for a white screen or a frozen route, you can
+also turn on opt-in Electron tracing. These logs are written to the Electron
+terminal output so they still help when the renderer DevTools never open:
+
+```
+$ IPTVNATOR_TRACE_STARTUP=1 pnpm run serve:backend
+```
+
+Nx equivalent:
+
+```
+$ IPTVNATOR_TRACE_STARTUP=1 nx serve electron-backend
+```
+
+Useful narrower flags:
+
+- `IPTVNATOR_TRACE_IPC=1` logs renderer `window.electron.*` calls reaching the
+  Electron bridge
+- `IPTVNATOR_TRACE_DB=1` logs DB worker requests and request-scoped DB events
+- `IPTVNATOR_TRACE_SQL=1` logs SQLite statements in both the main connection and
+  DB worker connection
+- `IPTVNATOR_TRACE_WINDOW=1` logs BrowserWindow load, navigation, and
+  unresponsive events
+- `IPTVNATOR_TRACE_RENDERER_CONSOLE=1` mirrors renderer console messages into
+  the Electron terminal output
+
+If the local Nx daemon gets into a bad state before rerunning Electron, reset it:
+
+```
+$ pnpm nx reset
+```
+
 To run only the Angular app without Electron, use:
 
 ```
-$ npm run serve:frontend
+$ pnpm run serve:frontend
 ```
 
 ## Disclaimer

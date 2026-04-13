@@ -5,7 +5,7 @@ import { MatDialog } from '@angular/material/dialog';
 import { MatIcon } from '@angular/material/icon';
 import { MatListModule } from '@angular/material/list';
 import { TranslateModule } from '@ngx-translate/core';
-import { EpgItemDescriptionComponent } from 'components';
+import { EpgItemDescriptionComponent } from '@iptvnator/ui/epg';
 import { EpgItem } from 'shared-interfaces';
 
 @Component({
@@ -40,6 +40,7 @@ export class EpgViewComponent {
 
     showDetails(item: EpgItem) {
         this.dialog.open(EpgItemDescriptionComponent, {
+            width: '600px',
             data: {
                 title: item.title ?? 'No title',
                 desc: item.description ?? 'No description',

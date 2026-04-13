@@ -1,4 +1,9 @@
 import 'jest-extended';
+import { ExternalPlayerSession } from './libs/shared/interfaces/src/lib/external-player-session.interface';
+import {
+    PlaylistRefreshEvent,
+    PlaylistRefreshPayload,
+} from './libs/shared/interfaces/src/lib/playlist-refresh.interface';
 import { Playlist } from './libs/shared/interfaces/src/lib/playlist.interface';
 
 declare module 'video.js' {
@@ -8,8 +13,23 @@ declare module 'video.js' {
 }
 
 declare global {
+    interface ElectronDbOperationEvent {
+        operationId?: string;
+        operation: string;
+        playlistId?: string;
+        status: 'started' | 'progress' | 'completed' | 'cancelled' | 'error';
+        phase?: string;
+        current?: number;
+        total?: number;
+        increment?: number;
+        error?: string;
+    }
+
     interface Window {
         electron: {
+            onPlaylistRefreshEvent?: (
+                callback: (data: PlaylistRefreshEvent) => void
+            ) => () => void;
             getAppVersion: () => Promise<string>;
             platform: string;
             fetchPlaylistByUrl: (
@@ -33,17 +53,25 @@ declare global {
             openInMpv: (
                 url: string,
                 title: string,
+                thumbnail: string,
                 userAgent: string,
                 referer?: string,
-                origin?: string
-            ) => void;
+                origin?: string,
+                contentInfo?: any,
+                startTime?: number,
+                headers?: Record<string, string>
+            ) => Promise<ExternalPlayerSession>;
             openInVlc: (
                 url: string,
                 title: string,
+                thumbnail: string,
                 userAgent: string,
                 referer?: string,
-                origin?: string
-            ) => void;
+                origin?: string,
+                contentInfo?: any,
+                startTime?: number,
+                headers?: Record<string, string>
+            ) => Promise<ExternalPlayerSession>;
             autoUpdatePlaylists: (playlists: Playlist[]) => Promise<Playlist[]>;
             fetchEpg: (
                 urls: string[]
@@ -74,27 +102,59 @@ declare global {
             }>;
             setMpvPlayerPath: (mpvPlayerPath: string) => Promise<void>;
             setVlcPlayerPath: (vlcPlayerPath: string) => Promise<void>;
+            onExternalPlayerSessionUpdate?: (
+                callback: (data: ExternalPlayerSession) => void
+            ) => () => void;
+            closeExternalPlayerSession: (
+                sessionId: string
+            ) => Promise<ExternalPlayerSession | null>;
             stalkerRequest: (payload: {
                 url: string;
                 macAddress: string;
                 params: Record<string, string>;
                 token?: string;
+                serialNumber?: string;
+                requestId?: string;
             }) => Promise<any>;
             xtreamRequest: (payload: {
                 url: string;
                 params: Record<string, string>;
+                requestId?: string;
+                sessionId?: string;
+                suppressErrorLog?: boolean;
             }) => Promise<{ payload: any; action: string }>;
+            xtreamCancelSession: (
+                sessionId: string
+            ) => Promise<{ success: boolean; cancelled: number }>;
+            refreshPlaylist: (
+                payload: PlaylistRefreshPayload
+            ) => Promise<Playlist>;
+            cancelPlaylistRefresh: (
+                operationId: string
+            ) => Promise<{ success: boolean }>;
             // Database operations
             dbCreatePlaylist: (playlist: any) => Promise<{ success: boolean }>;
             dbGetPlaylist: (playlistId: string) => Promise<any>;
+            dbUpsertAppPlaylist: (
+                playlist: any
+            ) => Promise<{ success: boolean }>;
+            dbUpsertAppPlaylists: (
+                playlists: any[]
+            ) => Promise<{ success: boolean; count: number }>;
+            dbGetAppPlaylists: () => Promise<any[]>;
+            dbGetAppPlaylist: (playlistId: string) => Promise<any | null>;
             dbUpdatePlaylist: (
                 playlistId: string,
                 updates: any
             ) => Promise<{ success: boolean }>;
             dbDeletePlaylist: (
-                playlistId: string
+                playlistId: string,
+                operationId?: string
             ) => Promise<{ success: boolean }>;
-            dbDeleteXtreamContent: (playlistId: string) => Promise<{
+            dbDeleteXtreamContent: (
+                playlistId: string,
+                operationId?: string
+            ) => Promise<{
                 success: boolean;
                 favoritedXtreamIds: number[];
                 recentlyViewedXtreamIds: {
@@ -112,7 +172,8 @@ declare global {
                 recentlyViewedXtreamIds: {
                     xtreamId: number;
                     viewedAt: string;
-                }[]
+                }[],
+                operationId?: string
             ) => Promise<{ success: boolean }>;
             dbHasCategories: (
                 playlistId: string,
@@ -144,16 +205,27 @@ declare global {
             dbSaveContent: (
                 playlistId: string,
                 streams: any[],
-                type: string
+                type: string,
+                operationId?: string
             ) => Promise<{ success: boolean; count: number }>;
+            dbClearXtreamImportCache: (
+                playlistId: string,
+                type: 'live' | 'movie' | 'series'
+            ) => Promise<{ success: boolean }>;
             dbSearchContent: (
                 playlistId: string,
                 searchTerm: string,
-                types: string[]
+                types: string[],
+                excludeHidden?: boolean
             ) => Promise<any[]>;
             dbGlobalSearch: (
                 searchTerm: string,
-                types: string[]
+                types: string[],
+                excludeHidden?: boolean
+            ) => Promise<any[]>;
+            dbGetGlobalRecentlyAdded: (
+                kind: 'all' | 'vod' | 'series',
+                limit?: number
             ) => Promise<any[]>;
             dbGetRecentlyViewed: () => Promise<any[]>;
             dbClearRecentlyViewed: () => Promise<{ success: boolean }>;
@@ -171,6 +243,11 @@ declare global {
                 playlistId: string
             ) => Promise<boolean>;
             dbGetFavorites: (playlistId: string) => Promise<any[]>;
+            dbGetGlobalFavorites: () => Promise<any[]>;
+            dbGetAllGlobalFavorites: () => Promise<any[]>;
+            dbReorderGlobalFavorites: (
+                updates: { content_id: number; position: number }[]
+            ) => Promise<{ success: boolean }>;
             // Recently viewed (playlist-specific)
             dbGetRecentItems: (playlistId: string) => Promise<any[]>;
             dbAddRecentItem: (
@@ -188,10 +265,37 @@ declare global {
                 xtreamId: number,
                 playlistId: string
             ) => Promise<any | null>;
+            dbGetAppState: (key: string) => Promise<string | null>;
+            dbSetAppState: (
+                key: string,
+                value: string
+            ) => Promise<{ success: boolean }>;
             // Remote control
             onChannelChange?: (
                 callback: (data: { direction: 'up' | 'down' }) => void
-            ) => void;
+            ) => () => void;
+            onRemoteControlCommand?: (
+                callback: (data: {
+                    type:
+                        | 'channel-select-number'
+                        | 'volume-up'
+                        | 'volume-down'
+                        | 'volume-toggle-mute';
+                    number?: number;
+                }) => void
+            ) => () => void;
+            updateRemoteControlStatus?: (status: {
+                portal: 'm3u' | 'xtream' | 'stalker' | 'unknown';
+                isLiveView: boolean;
+                channelName?: string;
+                channelNumber?: number;
+                epgTitle?: string;
+                epgStart?: string;
+                epgEnd?: string;
+                supportsVolume?: boolean;
+                volume?: number;
+                muted?: boolean;
+            }) => void;
             // Player error notifications
             onPlayerError?: (
                 callback: (data: {
@@ -211,12 +315,124 @@ declare global {
                 }) => void
             ) => void;
             // DB save content progress listener
-            onDbSaveContentProgress: (callback: (count: number) => void) => void;
+            onDbSaveContentProgress: (
+                callback: (count: number) => void
+            ) => void;
             removeDbSaveContentProgress: () => void;
-            dbDeleteAllPlaylists: () => Promise<{ success: boolean }>;
+            onDbOperationEvent?: (
+                callback: (data: ElectronDbOperationEvent) => void
+            ) => () => void;
+            dbDeleteAllPlaylists: (
+                operationId?: string
+            ) => Promise<{ success: boolean }>;
+            dbCancelOperation: (
+                operationId: string
+            ) => Promise<{ success: boolean }>;
+            // Playback positions
+            dbSavePlaybackPosition: (
+                playlistId: string,
+                data: any
+            ) => Promise<{ success: boolean }>;
+            dbGetPlaybackPosition: (
+                playlistId: string,
+                contentXtreamId: number,
+                contentType: 'vod' | 'episode'
+            ) => Promise<any | null>;
+            dbGetSeriesPlaybackPositions: (
+                playlistId: string,
+                seriesXtreamId: number
+            ) => Promise<any[]>;
+            dbGetRecentPlaybackPositions: (
+                playlistId: string,
+                limit?: number
+            ) => Promise<any[]>;
+            dbGetAllPlaybackPositions: (playlistId: string) => Promise<any[]>;
+            dbClearPlaybackPosition: (
+                playlistId: string,
+                contentXtreamId: number,
+                contentType: 'vod' | 'episode'
+            ) => Promise<{ success: boolean }>;
+            onPlaybackPositionUpdate: (
+                callback: (data: any) => void
+            ) => () => void;
+            // Downloads
+            downloadsStart: (data: {
+                playlistId: string;
+                xtreamId: number;
+                contentType: 'vod' | 'episode';
+                title: string;
+                url: string;
+                posterUrl?: string;
+                downloadFolder: string;
+                headers?: {
+                    userAgent?: string;
+                    referer?: string;
+                    origin?: string;
+                };
+                seriesXtreamId?: number;
+                seasonNumber?: number;
+                episodeNumber?: number;
+                // Playlist info for auto-creation if needed
+                playlistName?: string;
+                playlistType?:
+                    | 'xtream'
+                    | 'stalker'
+                    | 'm3u-file'
+                    | 'm3u-text'
+                    | 'm3u-url';
+                serverUrl?: string;
+                portalUrl?: string;
+                macAddress?: string;
+            }) => Promise<{ success: boolean; id?: number; error?: string }>;
+            downloadsCancel: (
+                downloadId: number
+            ) => Promise<{ success: boolean; error?: string }>;
+            downloadsRetry: (
+                downloadId: number,
+                downloadFolder: string
+            ) => Promise<{ success: boolean; error?: string }>;
+            downloadsRemove: (
+                downloadId: number
+            ) => Promise<{ success: boolean; error?: string }>;
+            downloadsGetList: (playlistId?: string) => Promise<DownloadItem[]>;
+            downloadsGet: (downloadId: number) => Promise<DownloadItem | null>;
+            downloadsGetDefaultFolder: () => Promise<string>;
+            downloadsSelectFolder: () => Promise<string | null>;
+            downloadsRevealFile: (
+                filePath: string
+            ) => Promise<{ success: boolean; error?: string }>;
+            downloadsPlayFile: (
+                filePath: string
+            ) => Promise<{ success: boolean; error?: string }>;
+            downloadsClearCompleted: (
+                playlistId?: string
+            ) => Promise<{ success: boolean }>;
+            onDownloadsUpdate: (callback: () => void) => () => void;
         };
         process: NodeJS.Process;
         require: NodeRequire;
+    }
+
+    /** Download item from the database */
+    interface DownloadItem {
+        id: number;
+        playlistId: string;
+        xtreamId: number;
+        contentType: 'vod' | 'episode';
+        seriesXtreamId?: number;
+        seasonNumber?: number;
+        episodeNumber?: number;
+        title: string;
+        url: string;
+        fileName?: string;
+        filePath?: string;
+        posterUrl?: string;
+        status: 'queued' | 'downloading' | 'completed' | 'failed' | 'canceled';
+        bytesDownloaded?: number;
+        totalBytes?: number;
+        errorMessage?: string;
+        createdAt?: string;
+        updatedAt?: string;
     }
 }
 

@@ -23,7 +23,6 @@ export const PlaylistActions = createActionGroup({
             positionUpdates: { id: string; changes: { position: number } }[];
         }>(),
         'Remove All Playlists': emptyProps(),
-        'Set Current Playlist Id': props<{ playlistId: string | undefined }>(),
         'Handle Adding Playlist By Url': props<{
             isTemporary: boolean;
             playlist: Playlist;
@@ -34,6 +33,7 @@ export const PlaylistActions = createActionGroup({
 export const ChannelActions = createActionGroup({
     source: 'Channels',
     events: {
+        'Set Channels Loading': props<{ loading: boolean }>(),
         'Set Channels': props<{ channels: Channel[] }>(),
         'Set Active Channel': props<{ channel: Channel }>(),
         'Set Active Channel Success': props<{ channel: Channel }>(),
@@ -48,8 +48,10 @@ export const EpgActions = createActionGroup({
     source: 'EPG',
     events: {
         'Set Active Epg Program': props<{ program: EpgProgram }>(),
+        'Set Active Playback Url': props<{ playbackUrl: string }>(),
         'Set Current Epg Program': props<{ program: EpgProgram }>(),
         'Reset Active Epg Program': emptyProps(),
+        'Return To Live Playback': emptyProps(),
         'Set Epg Available Flag': props<{ value: boolean }>(),
     },
 });

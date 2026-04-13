@@ -1,25 +1,21 @@
 import { DragDropModule } from '@angular/cdk/drag-drop';
-import { NgStyle } from '@angular/common';
+import { DatePipe, NgStyle } from '@angular/common';
 import {
     ChangeDetectionStrategy,
-    ChangeDetectorRef,
     Component,
-    EventEmitter,
+    effect,
     inject,
-    Input,
-    OnChanges,
-    OnDestroy,
-    OnInit,
-    Output,
-    SimpleChanges,
+    input,
+    output,
+    signal,
 } from '@angular/core';
 import { MatIconButton } from '@angular/material/button';
 import { MatDialog } from '@angular/material/dialog';
 import { MatIcon } from '@angular/material/icon';
 import { MatTooltip } from '@angular/material/tooltip';
 import { TranslatePipe } from '@ngx-translate/core';
+import { EpgItemDescriptionComponent } from '@iptvnator/ui/epg';
 import { EpgProgram } from 'shared-interfaces';
-import { EpgItemDescriptionComponent } from '../../epg-list/epg-item-description/epg-item-description.component';
 
 @Component({
     selector: 'app-channel-list-item',
@@ -27,6 +23,7 @@ import { EpgItemDescriptionComponent } from '../../epg-list/epg-item-description
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './channel-list-item.component.html',
     imports: [
+        DatePipe,
         DragDropModule,
         MatIcon,
         MatIconButton,
@@ -35,77 +32,36 @@ import { EpgItemDescriptionComponent } from '../../epg-list/epg-item-description
         TranslatePipe,
     ],
 })
-export class ChannelListItemComponent implements OnInit, OnChanges, OnDestroy {
-    private readonly cdr = inject(ChangeDetectorRef);
+export class ChannelListItemComponent {
     private readonly dialog = inject(MatDialog);
+    private readonly logoFailed = signal(false);
 
-    @Input() isDraggable = false;
-    @Input() logo!: string;
-    @Input() name = '';
-    @Input() showFavoriteButton = false;
-    @Input() selected = false;
-    @Input() showEpg = true;
-    @Input() epgProgram?: EpgProgram | null;
+    readonly isDraggable = input(false);
+    readonly logo = input<string | null | undefined>('');
+    readonly name = input('');
+    readonly showFavoriteButton = input(false);
+    readonly showAuxActionButton = input(false);
+    readonly showProgramInfoButton = input(true);
+    readonly showDetailsContextMenu = input(false);
+    readonly isFavorite = input(false);
+    readonly selected = input(false);
+    readonly showEpg = input(true);
+    readonly isRadio = input(false);
+    readonly epgProgram = input<EpgProgram | null | undefined>();
+    /** Progress percentage pre-computed by parent for performance */
+    readonly progressPercentage = input(0);
+    readonly auxActionIcon = input('delete');
+    readonly auxActionTooltip = input('');
 
-    @Output() clicked = new EventEmitter<void>();
-    @Output() favoriteToggled = new EventEmitter<MouseEvent>();
+    readonly clicked = output<void>();
+    readonly favoriteToggled = output<MouseEvent>();
+    readonly auxActionClicked = output<MouseEvent>();
+    readonly contextMenuRequested = output<MouseEvent>();
 
-    progressPercentage = 0;
-    private progressInterval?: number;
-
-    ngOnInit(): void {
-        this.calculateProgress();
-        // Update progress every 30 seconds
-        this.progressInterval = window.setInterval(() => {
-            this.calculateProgress();
-        }, 30000);
-    }
-
-    ngOnChanges(changes: SimpleChanges): void {
-        // Recalculate progress when epgProgram changes
-        if (changes['epgProgram']) {
-            this.calculateProgress();
-        }
-    }
-
-    ngOnDestroy(): void {
-        if (this.progressInterval) {
-            clearInterval(this.progressInterval);
-        }
-    }
-
-    /**
-     * Calculates the progress percentage for the EPG program
-     */
-    private calculateProgress(): void {
-        if (!this.epgProgram) {
-            this.progressPercentage = 0;
-            return;
-        }
-
-        const now = new Date().getTime();
-        const start = new Date(this.epgProgram.start).getTime();
-        const stop = new Date(this.epgProgram.stop).getTime();
-
-        const total = stop - start;
-        const elapsed = now - start;
-
-        this.progressPercentage = Math.min(
-            100,
-            Math.max(0, (elapsed / total) * 100)
-        );
-        this.cdr.markForCheck();
-    }
-
-    /**
-     * Formats time for display (HH:mm)
-     */
-    formatTime(dateString: string | number): string {
-        const date = new Date(dateString);
-        return date.toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            hour12: false,
+    constructor() {
+        effect(() => {
+            this.logo();
+            this.logoFailed.set(false);
         });
     }
 
@@ -119,5 +75,37 @@ export class ChannelListItemComponent implements OnInit, OnChanges, OnDestroy {
         this.dialog.open(EpgItemDescriptionComponent, {
             data: program,
         });
+    }
+
+    onFavoriteClick(event: MouseEvent): void {
+        event.stopPropagation();
+        this.favoriteToggled.emit(event);
+    }
+
+    onAuxActionClick(event: MouseEvent): void {
+        event.stopPropagation();
+        this.auxActionClicked.emit(event);
+    }
+
+    onContextMenu(event: MouseEvent): void {
+        if (!this.showDetailsContextMenu()) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        this.contextMenuRequested.emit(event);
+    }
+
+    showLogoFallback(): boolean {
+        return !this.logo() || this.logoFailed();
+    }
+
+    onLogoError(event: Event): void {
+        this.logoFailed.set(true);
+        (event.target as HTMLImageElement | null)?.style.setProperty(
+            'display',
+            'none'
+        );
     }
 }

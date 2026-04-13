@@ -45,16 +45,15 @@
         "serve": {
             "executor": "nx:run-commands",
             "options": {
-                "commands": [
-                    "nx run web:serve",
-                    "nx run electron-backend:serve-electron"
-                ]
+                "command": "nx run electron-backend:serve-electron"
             }
         },
         "serve-electron": {
             "executor": "nx-electron:execute",
             "options": {
-                "buildTarget": "electron-backend:build"
+                "buildTarget": "electron-backend:build",
+                "waitUntilTargets": ["web:serve"],
+                "remoteDebuggingPort": 9222
             }
         },
         "package": {

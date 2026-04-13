@@ -2,12 +2,42 @@ import { HttpClientTestingModule } from '@angular/common/http/testing';
 import { inject, TestBed } from '@angular/core/testing';
 import { StorageMap } from '@ngx-pwa/local-storage';
 import { of } from 'rxjs';
-import { STORE_KEY } from '../../../../../libs/shared/interfaces/src/lib/store-keys.enum';
-import { Theme } from '../../../../../libs/shared/interfaces/src/lib/theme.enum';
+import { STORE_KEY, Theme } from 'shared-interfaces';
 import { SettingsService } from './settings.service';
 
 describe('Service: Settings', () => {
+    let systemThemeListeners: Array<(event: MediaQueryListEvent) => void>;
+
     beforeEach(() => {
+        systemThemeListeners = [];
+        Object.defineProperty(window, 'matchMedia', {
+            writable: true,
+            value: jest.fn().mockImplementation(() => ({
+                matches: true,
+                addEventListener: jest.fn(
+                    (
+                        _event: 'change',
+                        listener: (event: MediaQueryListEvent) => void
+                    ) => {
+                        systemThemeListeners.push(listener);
+                    }
+                ),
+                removeEventListener: jest.fn(
+                    (
+                        _event: 'change',
+                        listener: (event: MediaQueryListEvent) => void
+                    ) => {
+                        systemThemeListeners = systemThemeListeners.filter(
+                            (registeredListener) =>
+                                registeredListener !== listener
+                        );
+                    }
+                ),
+                addListener: jest.fn(),
+                removeListener: jest.fn(),
+            })),
+        });
+
         TestBed.configureTestingModule({
             providers: [SettingsService],
             imports: [HttpClientTestingModule],
@@ -25,7 +55,7 @@ describe('Service: Settings', () => {
         [SettingsService, StorageMap],
         (service: SettingsService, storage: StorageMap) => {
             const version = '2.1.0';
-            jest.spyOn(storage, 'set').mockReturnValue(of([] as any));
+            jest.spyOn(storage, 'set').mockReturnValue(of(undefined));
             service.setValueToLocalStorage(STORE_KEY.Version, version);
             expect(storage.set).toHaveBeenCalledWith(
                 STORE_KEY.Version,
@@ -73,6 +103,21 @@ describe('Service: Settings', () => {
                 service.changeTheme(Theme.LightTheme);
                 expect(spyOnRemove).toHaveBeenCalledTimes(1);
                 expect(spyOnAdd).toHaveBeenCalledTimes(0);
+            }
+        ));
+
+        it('should follow the system theme', inject(
+            [SettingsService],
+            (service: SettingsService) => {
+                service.changeTheme(Theme.SystemTheme);
+
+                expect(spyOnAdd).toHaveBeenCalledWith('dark-theme');
+
+                systemThemeListeners[0]?.({
+                    matches: false,
+                } as MediaQueryListEvent);
+
+                expect(spyOnRemove).toHaveBeenCalledWith('dark-theme');
             }
         ));
     });

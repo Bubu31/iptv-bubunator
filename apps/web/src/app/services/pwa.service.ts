@@ -1,7 +1,6 @@
 import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
-import { Params } from '@angular/router';
 import { SwUpdate } from '@angular/service-worker';
 import { Store } from '@ngrx/store';
 import { TranslateService } from '@ngx-translate/core';
@@ -14,10 +13,40 @@ import {
     PLAYLIST_PARSE_BY_URL,
     PLAYLIST_UPDATE,
     STALKER_REQUEST,
+    XtreamCodeActions,
     XTREAM_REQUEST,
     XTREAM_RESPONSE,
 } from 'shared-interfaces';
 import { AppConfig } from '../../environments/environment';
+import {
+    createPortalDebugErrorEvent,
+    createPortalDebugRequestContext,
+    createPortalDebugSuccessEvent,
+    logPortalDebugEvent,
+    logPortalDebugRequest,
+} from '@iptvnator/portal/shared/util';
+
+interface PwaXtreamResponse {
+    readonly payload?: unknown;
+    readonly status?: number;
+}
+
+interface PwaXtreamResult {
+    readonly action: string;
+    readonly payload: unknown;
+    readonly type: typeof XTREAM_RESPONSE;
+}
+
+interface PwaErrorResult {
+    readonly message: string;
+    readonly status: number;
+    readonly type: typeof ERROR;
+}
+
+interface ErrorStatus {
+    readonly message?: string;
+    readonly status?: number;
+}
 
 @Injectable({
     providedIn: 'root',
@@ -28,6 +57,15 @@ export class PwaService extends DataService {
     private readonly store = inject(Store);
     private readonly swUpdate = inject(SwUpdate);
     private readonly translateService = inject(TranslateService);
+    private readonly silentXtreamActions = new Set<string>([
+        XtreamCodeActions.GetAccountInfo,
+        XtreamCodeActions.GetLiveCategories,
+        XtreamCodeActions.GetVodCategories,
+        XtreamCodeActions.GetSeriesCategories,
+        XtreamCodeActions.GetShortEpg,
+        XtreamCodeActions.GetSimpleDataTable,
+        XtreamCodeActions.GetSimpleDateTable,
+    ]);
 
     /** Proxy URL to avoid CORS issues */
     corsProxyUrl = AppConfig.BACKEND_URL;
@@ -61,26 +99,34 @@ export class PwaService extends DataService {
      * @param type ipc command type
      * @param payload payload
      */
-    sendIpcEvent(type: string, payload?: unknown) {
+    sendIpcEvent<T = unknown>(type: string, payload?: unknown): T {
         if (type === PLAYLIST_PARSE_BY_URL) {
             this.fetchFromUrl(payload);
-        } else if (type === PLAYLIST_UPDATE) {
+            return undefined as T;
+        }
+
+        if (type === PLAYLIST_UPDATE) {
             this.refreshPlaylist(payload);
-        } else if (type === XTREAM_REQUEST) {
+            return undefined as T;
+        }
+
+        if (type === XTREAM_REQUEST) {
             return this.forwardXtreamRequest(
                 payload as { url: string; params: Record<string, string> }
-            );
-        } else if (type === STALKER_REQUEST) {
+            ) as T;
+        }
+
+        if (type === STALKER_REQUEST) {
             return this.forwardStalkerRequest(
                 payload as {
                     url: string;
                     macAddress: string;
                     params: Record<string, string>;
                 }
-            );
-        } else {
-            return Promise.resolve();
+            ) as T;
         }
+
+        return undefined as T;
     }
 
     refreshPlaylist(payload: Partial<Playlist & { id: string }>) {
@@ -88,10 +134,8 @@ export class PwaService extends DataService {
             .pipe(
                 catchError((error) => {
                     this.snackBar.open(
-                        `Error: ${error.message ?? 'Unknown error'}, status: ${
-                            error.status ?? 500
-                        }`,
-                        'Close',
+                        this.getPlaylistRefreshErrorMessage(error),
+                        this.translateService.instant('CLOSE'),
                         {
                             duration: 5000,
                         }
@@ -117,11 +161,32 @@ export class PwaService extends DataService {
             });
     }
 
+    private getPlaylistRefreshErrorMessage(error: unknown): string {
+        const statusCode =
+            this.getErrorDetails(error)?.status ??
+            this.extractHttpStatusCode(error);
+
+        if (statusCode === 404) {
+            return this.translateService.instant('HOME.URL_UPLOAD.ERROR_404');
+        }
+        if (statusCode === 403) {
+            return this.translateService.instant('HOME.URL_UPLOAD.ERROR_403');
+        }
+        if (statusCode === 401) {
+            return this.translateService.instant('HOME.URL_UPLOAD.ERROR_401');
+        }
+        return this.translateService.instant(
+            'HOME.URL_UPLOAD.ERROR_FETCH_FAILED'
+        );
+    }
+
     /**
      * Fetches playlist from the specified url
      * @param payload playlist payload
      */
     fetchFromUrl(payload: Partial<Playlist>): void {
+        const title = payload.title?.trim() || undefined;
+
         this.getPlaylistFromUrl(payload.url)
             .pipe(
                 catchError((error) => {
@@ -136,35 +201,65 @@ export class PwaService extends DataService {
                 })
             )
             .subscribe((response: Playlist) => {
+                const playlist = title
+                    ? {
+                          ...response,
+                          filename: title,
+                          title,
+                      }
+                    : response;
+
                 this.store.dispatch(
                     PlaylistActions.handleAddingPlaylistByUrl({
                         isTemporary: !!payload?.isTemporary,
-                        playlist: response,
+                        playlist,
                     })
                 );
             });
     }
 
     getErrorMessageByStatusCode(status: number) {
-        let message = 'Something went wrong';
+        let messageKey = 'HOME.URL_UPLOAD.ERROR_FETCH_FAILED';
         switch (status) {
-            case 0:
-                message = 'The backend is not reachable';
-                break;
             case 413:
-                message =
-                    'This file is too big. Use standalone or self-hosted version of the app.';
+                return 'This file is too big. Use standalone or self-hosted version of the app.';
+            case 403:
+                messageKey = 'HOME.URL_UPLOAD.ERROR_403';
+                break;
+            case 404:
+                messageKey = 'HOME.URL_UPLOAD.ERROR_404';
+                break;
+            case 401:
+                messageKey = 'HOME.URL_UPLOAD.ERROR_401';
                 break;
             default:
                 break;
         }
-        return message;
+        return this.translateService.instant(messageKey);
+    }
+
+    private extractHttpStatusCode(error: unknown): number | null {
+        if (
+            error &&
+            typeof error === 'object' &&
+            'status' in error &&
+            typeof error.status === 'number'
+        ) {
+            return error.status;
+        }
+
+        const msg = String((error as { message?: string })?.message ?? error);
+        const match = msg.match(/status code (\d{3})/);
+        return match ? parseInt(match[1], 10) : null;
     }
 
     async forwardXtreamRequest(payload: {
         url: string;
         params: Record<string, string>;
         macAddress?: string;
+        requestId?: string;
+        sessionId?: string;
+        suppressErrorLog?: boolean;
     }) {
         const headers = payload.macAddress
             ? {
@@ -173,59 +268,171 @@ export class PwaService extends DataService {
                   },
               }
             : {};
-        try {
-            let result: any;
-            const response = await firstValueFrom(
-                this.http.get(`${this.corsProxyUrl}/xtream`, {
-                    params: {
-                        url: payload.url,
-                        ...payload.params,
-                    },
-                    ...headers,
-                })
-            );
+        const requestPayload = {
+            method: 'GET',
+            url: `${this.corsProxyUrl}/xtream`,
+            params: {
+                url: payload.url,
+                ...payload.params,
+            },
+            ...(payload.macAddress
+                ? {
+                      headers: {
+                          Cookie: `mac=${payload.macAddress}`,
+                      },
+                  }
+                : {}),
+        };
+        const context = createPortalDebugRequestContext({
+            provider: 'xtream',
+            operation: payload.params?.action ?? 'unknown',
+            transport: 'pwa-http',
+            request: requestPayload,
+        });
+        logPortalDebugRequest(context);
 
-            if (!(response as any).payload) {
-                if (payload.params.action === 'get_account_info') {
-                    console.log('Portal status check failed - portal may be unavailable:', (response as any).message || 'No payload received');
-                    return;
+        try {
+            let result: PwaErrorResult | PwaXtreamResult;
+            const response = (await firstValueFrom(
+                this.http.get<PwaXtreamResponse>(
+                    `${this.corsProxyUrl}/xtream`,
+                    {
+                        params: {
+                            url: payload.url,
+                            ...payload.params,
+                        },
+                        ...headers,
+                    }
+                )
+            )) as PwaXtreamResponse;
+
+            if (!response.payload) {
+                const action = payload.params.action;
+                const isSilentAction =
+                    payload.suppressErrorLog === true ||
+                    this.silentXtreamActions.has(action);
+                const normalizedMessage =
+                    this.getReadableXtreamErrorMessage(response);
+                logPortalDebugEvent(
+                    createPortalDebugErrorEvent(context, response)
+                );
+
+                if (isSilentAction) {
+                    console.log(
+                        `Background Xtream action failed (${action ?? 'unknown'}):`,
+                        normalizedMessage
+                    );
+                    return {
+                        type: ERROR,
+                        status: response.status ?? 500,
+                        message: normalizedMessage,
+                    };
                 }
 
                 result = {
                     type: ERROR,
-                    status: (response as any).status,
-                    message: (response as any).message ?? 'Unknown error',
+                    status: response.status ?? 500,
+                    message: normalizedMessage,
                 };
                 window.postMessage(result);
             } else {
                 result = {
                     type: XTREAM_RESPONSE,
-                    payload: (response as any).payload,
+                    payload: response.payload,
                     action: payload.params.action,
                 };
+                logPortalDebugEvent(
+                    createPortalDebugSuccessEvent(context, response)
+                );
                 window.postMessage(result);
             }
             return result;
-        } catch (error: any) {
-            const isStatusCheck = payload.params.action === 'get_account_info';
+        } catch (error: unknown) {
+            logPortalDebugEvent(createPortalDebugErrorEvent(context, error));
+            const action = payload.params.action;
+            const isSilentAction =
+                payload.suppressErrorLog === true ||
+                this.silentXtreamActions.has(action);
+            const normalizedMessage = this.getReadableXtreamErrorMessage(error);
+            const errorInfo = this.getErrorDetails(error);
 
             // Log error to console
-            if (isStatusCheck) {
-                console.log('Portal status check failed - portal may be unavailable:', error.message || error);
-                return;
+            if (isSilentAction) {
+                console.log(
+                    `Background Xtream action failed (${action ?? 'unknown'}):`,
+                    normalizedMessage
+                );
+                return {
+                    type: ERROR,
+                    status: errorInfo?.status ?? 500,
+                    message: normalizedMessage,
+                };
             }
 
-            console.error('Xtream request error:', error.message);
+            console.error('Xtream request error:', normalizedMessage);
             this.snackBar.open(
-                `Error: ${error.message ?? ' Unknown error'}, status: ${
-                    error.status ?? 500
-                }`,
+                `Xtream request failed: ${normalizedMessage}`,
                 'Close',
                 {
                     duration: 5000,
                 }
             );
+            return {
+                type: ERROR,
+                status: errorInfo?.status ?? 500,
+                message: normalizedMessage,
+            };
         }
+    }
+
+    private getReadableXtreamErrorMessage(error: unknown): string {
+        const fallback = 'Failed to connect to Xtream server';
+        if (!error) {
+            return fallback;
+        }
+
+        const maybeError = error as {
+            message?: unknown;
+            statusText?: unknown;
+            error?: unknown;
+        };
+
+        if (typeof maybeError.message === 'string') {
+            if (maybeError.message.includes('[object Object]')) {
+                if (typeof maybeError.error === 'string') {
+                    return maybeError.error;
+                }
+                if (
+                    maybeError.error &&
+                    typeof maybeError.error === 'object' &&
+                    'message' in
+                        (maybeError.error as Record<string, unknown>) &&
+                    typeof (maybeError.error as Record<string, unknown>)
+                        .message === 'string'
+                ) {
+                    return (maybeError.error as Record<string, string>).message;
+                }
+                return fallback;
+            }
+            return maybeError.message;
+        }
+
+        if (typeof maybeError.statusText === 'string') {
+            return maybeError.statusText;
+        }
+
+        if (typeof error === 'string') {
+            return error;
+        }
+
+        return fallback;
+    }
+
+    private getErrorDetails(error: unknown): ErrorStatus | null {
+        if (error && typeof error === 'object') {
+            return error as ErrorStatus;
+        }
+        return null;
     }
 
     async forwardStalkerRequest(payload: {
@@ -233,18 +440,31 @@ export class PwaService extends DataService {
         params: Record<string, string>;
         macAddress: string;
     }) {
-        try {
-            // Build the query parameters
-            const params = new URLSearchParams({
-                url: payload.url,
-                ...payload.params,
-                macAddress: payload.macAddress,
-            });
+        const params = new URLSearchParams({
+            url: payload.url,
+            ...payload.params,
+            macAddress: payload.macAddress,
+        });
+        const requestUrl = `${this.corsProxyUrl}/stalker?${params.toString()}`;
+        const context = createPortalDebugRequestContext({
+            provider: 'stalker',
+            operation: payload.params?.action ?? 'unknown',
+            transport: 'pwa-http',
+            request: {
+                method: 'GET',
+                url: requestUrl,
+                params: {
+                    url: payload.url,
+                    ...payload.params,
+                    macAddress: payload.macAddress,
+                },
+            },
+        });
+        logPortalDebugRequest(context);
 
+        try {
             // Make the fetch request
-            const response = await fetch(
-                `${this.corsProxyUrl}/stalker?${params.toString()}`
-            );
+            const response = await fetch(requestUrl);
 
             if (!response.ok) {
                 throw new Error(
@@ -253,12 +473,18 @@ export class PwaService extends DataService {
             }
 
             // Parse and return the JSON response
-            return (await response.json()).payload;
-        } catch (err) {
+            const responseBody = await response.json();
+            logPortalDebugEvent(
+                createPortalDebugSuccessEvent(context, responseBody)
+            );
+            return responseBody.payload;
+        } catch (err: unknown) {
+            const errorInfo = this.getErrorDetails(err);
+            logPortalDebugEvent(createPortalDebugErrorEvent(context, err));
             console.error('Stalker request error:', err);
 
             this.snackBar.open(
-                `Error: ${err.message ?? ' Not found'}, status: ${err.status ?? 404}`,
+                `Error: ${errorInfo?.message ?? ' Not found'}, status: ${errorInfo?.status ?? 404}`,
                 'Close',
                 {
                     duration: 5000,
@@ -278,7 +504,7 @@ export class PwaService extends DataService {
         // not implemented
     }
 
-    listenOn(_command: string, callback: (...args: any[]) => void): void {
+    listenOn(_command: string, callback: (...args: unknown[]) => void): void {
         window.addEventListener('message', callback);
     }
 

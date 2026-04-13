@@ -1,174 +1,94 @@
-@if (_channelList) {
-    <mat-tab-group color="primary" backgroundColor="primary">
-        <mat-tab>
-            <ng-template mat-tab-label>
-                <mat-icon class="tab-icon">list</mat-icon>
-                <div class="tab-title">
-                    {{ 'CHANNELS.ALL_CHANNELS' | translate }}
-                </div>
-            </ng-template>
-            <div class="search-panel">
-                <mat-form-field class="search-bar">
-                    <input
-                        matInput
-                        class="full-width"
-                        type="search"
-                        spellcheck="false"
-                        autocomplete="off"
-                        #search
-                        [placeholder]="'CHANNELS.SEARCH_CHANNEL' | translate"
-                        [(ngModel)]="searchTerm.name"
-                    />
-                </mat-form-field>
-            </div>
-            <div id="all-channels" class="channel-list">
-                <cdk-virtual-scroll-viewport
-                    [itemSize]="itemSize"
-                    class="scroll-viewport"
-                >
-                    <app-channel-list-item
-                        *cdkVirtualFor="
-                            let channel of _channelList
-                                | filterBy: searchTerm.name : 'name';
-                            index as i;
-                            trackBy: trackByFn
-                        "
-                        [name]="
-                            i +
-                            1 +
-                            '. ' +
-                            (channel?.name || 'CHANNELS.UNNAMED_CHANNEL'
-                                | translate)
-                        "
-                        [logo]="channel?.tvg?.logo"
-                        [showEpg]="shouldShowEpg"
-                        [epgProgram]="getEpgForChannel(channel)"
-                        (clicked)="selectChannel(channel)"
-                        [selected]="activeChannel()?.url === channel?.url"
-                    />
-                </cdk-virtual-scroll-viewport>
-            </div>
-        </mat-tab>
-
-        <mat-tab>
-            <ng-template mat-tab-label>
-                <mat-icon class="tab-icon">category</mat-icon>
-                <div class="tab-title">
-                    {{ 'CHANNELS.GROUPS' | translate }}
-                </div>
-            </ng-template>
-            <div id="groups-list" class="channel-list">
-                <mat-accordion multi>
-                    @for (
-                        groups of groupedChannels | keyvalue: groupsComparator;
-                        track $index
-                    ) {
-                        @if (groups.value.length > 0) {
-                            <mat-expansion-panel>
-                                <mat-expansion-panel-header>
-                                    {{
-                                        groups.key ||
-                                            ('CHANNELS.UNGROUPED' | translate)
-                                            | titlecase
-                                    }}
-                                    ({{ groups.value.length }})
-                                </mat-expansion-panel-header>
-
-                                <ng-template matExpansionPanelContent>
-                                    <div class="group-channels">
-                                        @for (
-                                            channel of groups.value;
-                                            track trackByFn($index, channel);
-                                            let i = $index
-                                        ) {
-                                            <app-channel-list-item
-                                                [name]="
-                                                    i +
-                                                    1 +
-                                                    '. ' +
-                                                    (channel?.name ||
-                                                        'CHANNELS.UNNAMED_CHANNEL'
-                                                        | translate)
-                                                "
-                                                [logo]="channel?.tvg?.logo"
-                                                [showEpg]="shouldShowEpg"
-                                                [epgProgram]="getEpgForChannel(channel)"
-                                                (clicked)="selectChannel(channel)"
-                                                [selected]="
-                                                    activeChannel()?.url === channel?.url
-                                                "
-                                            ></app-channel-list-item>
-                                        }
-                                    </div>
-                                </ng-template>
-                            </mat-expansion-panel>
-                        }
-                    }
-                </mat-accordion>
-            </div>
-        </mat-tab>
-
-        @let showFavorites = (playlistId$ | async) !== 'GLOBAL_FAVORITES';
-        @if (showFavorites) {
-            <mat-tab>
-                <ng-template mat-tab-label>
-                    <mat-icon class="tab-icon">star</mat-icon>
-                    <div class="tab-title">
-                        {{ 'CHANNELS.FAVORITES' | translate }}
-                    </div>
-                </ng-template>
-                @let favorites = favorites$ | async;
-                @if (favorites) {
-                    <div
-                        class="channel-list"
-                        cdkDropList
-                        (cdkDropListDropped)="drop($event, favorites)"
-                        id="favorites-list"
-                    >
-                        @if (favorites.length > 0) {
-                            @for (
-                                channel of favorites;
-                                track trackByFn($index, channel);
-                                let i = $index
-                            ) {
-                                <app-channel-list-item
-                                    [name]="
-                                        i +
-                                        1 +
-                                        '. ' +
-                                        (channel?.name ||
-                                            'CHANNELS.UNNAMED_CHANNEL'
-                                            | translate)
-                                    "
-                                    [isDraggable]="true"
-                                    [logo]="channel?.tvg?.logo"
-                                    [showEpg]="shouldShowEpg"
-                                    [epgProgram]="getEpgForChannel(channel)"
-                                    (clicked)="selectChannel(channel)"
-                                    [selected]="activeChannel()?.url === channel?.url"
-                                    [showFavoriteButton]="true"
-                                    (favoriteToggled)="
-                                        toggleFavoriteChannel(channel, $event)
-                                    "
-                                />
-                            }
-                        } @else {
-                            <div class="empty-favorites">
-                                <strong>{{
-                                    'CHANNELS.NO_FAVORITES' | translate
-                                }}</strong>
-                            </div>
-                            <div class="empty-favorites-hint">
-                                {{
-                                    'CHANNELS.USE_STAR_TO_FAVORITE' | translate
-                                }}
-                            </div>
-                        }
-                    </div>
+@if (channelsLoading()) {
+    <app-channel-list-loading-state [view]="activeView()" />
+} @else if (displayedChannels().length) {
+    @if (viewTitle() && activeView() !== 'groups') {
+        <header class="context-header">
+            <div class="context-header__top">
+                <h2>{{ viewTitle() | translate }}</h2>
+                @if (
+                    activeView() === 'recent' &&
+                    recentChannelItems().length > 0
+                ) {
+                    <button mat-button (click)="clearRecentChannels()">
+                        {{ 'WORKSPACE.SHELL.CLEAR_RECENTLY_VIEWED_SECTION' | translate }}
+                    </button>
                 }
-            </mat-tab>
+            </div>
+        </header>
+        <div class="context-divider"></div>
+    }
+
+    @switch (activeView()) {
+        @case ('all') {
+            <app-all-channels-view
+                [channels]="displayedChannels()"
+                [searchTerm]="workspaceSearchTerm()"
+                [channelEpgMap]="channelEpgMap()"
+                [progressTick]="progressTick()"
+                [shouldShowEpg]="shouldShowEpg()"
+                [itemSize]="itemSize()"
+                [activeChannelUrl]="activeChannelUrl()"
+                [favoriteIds]="favoriteIds()"
+                (channelSelected)="onChannelSelected($event)"
+                (favoriteToggled)="onFavoriteToggled($event)"
+            />
         }
-    </mat-tab-group>
+        @case ('groups') {
+            <app-groups-view
+                [groupedChannels]="groupedChannels()"
+                [searchTerm]="workspaceSearchTerm()"
+                [channelEpgMap]="channelEpgMap()"
+                [progressTick]="progressTick()"
+                [shouldShowEpg]="shouldShowEpg()"
+                [activeChannelUrl]="activeChannelUrl()"
+                [favoriteIds]="favoriteIds()"
+                [hiddenGroupTitles]="hiddenGroupTitles()"
+                [sidebarWidth]="sidebarWidth()"
+                (channelSelected)="onChannelSelected($event)"
+                (favoriteToggled)="onFavoriteToggled($event)"
+                (hiddenGroupTitlesChanged)="
+                    onHiddenGroupTitlesChanged($event)
+                "
+                (sidebarWidthRequested)="onSidebarWidthRequested($event)"
+                (sidebarWidthRequestEnded)="onSidebarWidthRequestEnded($event)"
+            />
+        }
+        @case ('favorites') {
+            @let favorites = favorites$ | async;
+            @if (favorites) {
+                <app-favorites-view
+                    [favorites]="favorites"
+                    [searchTerm]="workspaceSearchTerm()"
+                    [channelEpgMap]="channelEpgMap()"
+                    [progressTick]="progressTick()"
+                    [shouldShowEpg]="shouldShowEpg()"
+                    [activeChannelUrl]="activeChannelUrl()"
+                    (channelSelected)="onChannelSelected($event)"
+                    (favoriteToggled)="onFavoriteToggled($event)"
+                    (favoritesReordered)="onFavoritesReordered($event)"
+                />
+            }
+        }
+        @case ('recent') {
+            <app-recent-view
+                [recentItems]="recentChannelItems()"
+                [searchTerm]="workspaceSearchTerm()"
+                [channelEpgMap]="channelEpgMap()"
+                [progressTick]="progressTick()"
+                [shouldShowEpg]="shouldShowEpg()"
+                [activeChannelUrl]="activeChannelUrl()"
+                (channelSelected)="onChannelSelected($event)"
+                (removeRecent)="removeRecentChannel($event)"
+            />
+        }
+    }
 } @else {
-    No channels there
+    <div class="empty-source-state">
+        <div class="empty-source-state__icon-wrapper">
+            <mat-icon class="empty-source-state__icon">folder_off</mat-icon>
+        </div>
+        <h3 class="empty-source-state__title">
+            {{ 'CHANNELS.NO_CHANNELS_FOUND' | translate }}
+        </h3>
+    </div>
 }

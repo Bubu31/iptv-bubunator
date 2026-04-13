@@ -1,12 +1,13 @@
 import { inject, Injectable } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router } from '@angular/router';
+import { EpgService } from '@iptvnator/epg/data-access';
+import { resolveM3uCatchupUrl } from 'm3u-utils';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { Store } from '@ngrx/store';
 import { StorageMap } from '@ngx-pwa/local-storage';
 import { TranslateService } from '@ngx-translate/core';
 import {
-    combineLatestWith,
     EMPTY,
     filter,
     firstValueFrom,
@@ -15,20 +16,20 @@ import {
     tap,
     withLatestFrom,
 } from 'rxjs';
-import { DataService, EpgService, PlaylistsService } from 'services';
+import { DataService, PlaylistsService } from 'services';
 import {
-    GLOBAL_FAVORITES_PLAYLIST_ID,
     OPEN_MPV_PLAYER,
     OPEN_VLC_PLAYER,
+    Channel,
     Playlist,
     STORE_KEY,
     VideoPlayer,
 } from 'shared-interfaces';
 import {
-    PlaylistActions,
     ChannelActions,
     EpgActions,
     FavoritesActions,
+    PlaylistActions,
 } from './actions';
 import {
     selectActive,
@@ -36,6 +37,7 @@ import {
     selectChannels,
     selectFavorites,
 } from './selectors';
+import { buildExternalPlayerPayload } from './external-player-payload.util';
 
 @Injectable({ providedIn: 'any' })
 export class PlaylistEffects {
@@ -53,10 +55,11 @@ export class PlaylistEffects {
         () => {
             return this.actions$.pipe(
                 ofType(FavoritesActions.updateFavorites),
-                combineLatestWith(
+                withLatestFrom(
                     this.store.select(selectFavorites),
                     this.store.select(selectActivePlaylistId)
                 ),
+                filter(([, , playlistId]) => !!playlistId),
                 switchMap(([, favorites, playlistId]) =>
                     this.playlistsService.updateFavorites(playlistId, favorites)
                 ),
@@ -76,11 +79,8 @@ export class PlaylistEffects {
         () => {
             return this.actions$.pipe(
                 ofType(FavoritesActions.setFavorites),
-                combineLatestWith(this.store.select(selectActivePlaylistId)),
-                filter(
-                    ([, playlistId]) =>
-                        playlistId !== GLOBAL_FAVORITES_PLAYLIST_ID
-                ),
+                withLatestFrom(this.store.select(selectActivePlaylistId)),
+                filter(([, playlistId]) => !!playlistId),
                 switchMap(([action, playlistId]) =>
                     this.playlistsService.setFavorites(
                         playlistId,
@@ -94,43 +94,48 @@ export class PlaylistEffects {
         }
     );
 
-    setActiveEpgProgram$ = createEffect(
+    resolveActiveEpgProgram$ = createEffect(() => {
+        return this.actions$.pipe(
+            ofType(EpgActions.setActiveEpgProgram),
+            withLatestFrom(this.store.select(selectActive)),
+            map(([action, activeChannel]) => {
+                const playbackUrl = activeChannel
+                    ? resolveM3uCatchupUrl(activeChannel, action.program)
+                    : null;
+
+                return playbackUrl
+                    ? EpgActions.setActivePlaybackUrl({ playbackUrl })
+                    : EpgActions.resetActiveEpgProgram();
+            })
+        );
+    });
+
+    openArchivedPlayback$ = createEffect(
         () => {
             return this.actions$.pipe(
-                ofType(EpgActions.setActiveEpgProgram),
-                combineLatestWith(this.store.select(selectActive)),
-                map(([, activeChannel]) => {
-                    firstValueFrom(this.storage.get(STORE_KEY.Settings)).then(
-                        (settings: any) => {
-                            if (
-                                settings &&
-                                Object.keys(settings).length > 0 &&
-                                settings.player === VideoPlayer.MPV
-                            )
-                                this.dataService.sendIpcEvent(OPEN_MPV_PLAYER, {
-                                    url:
-                                        activeChannel?.url +
-                                        (activeChannel?.epgParams ?? ''),
-                                    title: activeChannel?.name ?? '',
-                                    'user-agent': activeChannel?.http?.['user-agent'],
-                                    referer: activeChannel?.http?.referrer,
-                                    origin: activeChannel?.http?.origin,
-                                });
-                            else if (
-                                settings &&
-                                Object.keys(settings).length > 0 &&
-                                settings.player === VideoPlayer.VLC
-                            )
-                                this.dataService.sendIpcEvent(OPEN_VLC_PLAYER, {
-                                    url:
-                                        activeChannel?.url +
-                                        (activeChannel?.epgParams ?? ''),
-                                    title: activeChannel?.name ?? '',
-                                    'user-agent': activeChannel?.http?.['user-agent'],
-                                    referer: activeChannel?.http?.referrer,
-                                    origin: activeChannel?.http?.origin,
-                                });
-                        }
+                ofType(EpgActions.setActivePlaybackUrl),
+                withLatestFrom(this.store.select(selectActive)),
+                tap(([action, activeChannel]) => {
+                    void this.openWithConfiguredExternalPlayer(
+                        action.playbackUrl,
+                        activeChannel
+                    );
+                })
+            );
+        },
+        { dispatch: false }
+    );
+
+    returnToLivePlayback$ = createEffect(
+        () => {
+            return this.actions$.pipe(
+                ofType(EpgActions.returnToLivePlayback),
+                withLatestFrom(this.store.select(selectActive)),
+                filter(([, activeChannel]) => Boolean(activeChannel?.url)),
+                tap(([, activeChannel]) => {
+                    void this.openWithConfiguredExternalPlayer(
+                        activeChannel?.url ?? '',
+                        activeChannel
                     );
                 })
             );
@@ -213,28 +218,40 @@ export class PlaylistEffects {
         );
     });
 
+    private async openWithConfiguredExternalPlayer(
+        playbackUrl: string,
+        activeChannel: Channel | undefined | null
+    ): Promise<void> {
+        const payload = buildExternalPlayerPayload(activeChannel, playbackUrl);
+        if (!payload) {
+            return;
+        }
+
+        const settings: any = await firstValueFrom(
+            this.storage.get(STORE_KEY.Settings)
+        );
+        if (!settings || Object.keys(settings).length === 0) {
+            return;
+        }
+
+        if (settings.player === VideoPlayer.MPV) {
+            this.dataService.sendIpcEvent(OPEN_MPV_PLAYER, payload);
+            return;
+        }
+
+        if (settings.player === VideoPlayer.VLC) {
+            this.dataService.sendIpcEvent(OPEN_VLC_PLAYER, payload);
+        }
+    }
+
     removePlaylist$ = createEffect(
         () => {
             return this.actions$.pipe(
                 ofType(PlaylistActions.removePlaylist),
                 switchMap(async (action) => {
-                    // Delete from IndexedDB
                     await firstValueFrom(
                         this.playlistsService.deletePlaylist(action.playlistId)
                     );
-                    // Also delete from SQLite if running in Electron
-                    if ((window as any).electron?.dbDeletePlaylist) {
-                        try {
-                            await (window as any).electron.dbDeletePlaylist(
-                                action.playlistId
-                            );
-                        } catch (error) {
-                            console.error(
-                                'Error deleting playlist from SQLite:',
-                                error
-                            );
-                        }
-                    }
                 })
             );
         },
@@ -282,36 +299,18 @@ export class PlaylistEffects {
                     PlaylistActions.addPlaylist,
                     PlaylistActions.handleAddingPlaylistByUrl
                 ),
+                tap((action) => {
+                    if ('isTemporary' in action && action.isTemporary) {
+                        return;
+                    }
+
+                    this.navigateToPlaylist(action.playlist);
+                }),
                 switchMap((action) => {
                     if ('isTemporary' in action && action.isTemporary) {
                         return EMPTY;
                     }
                     return this.playlistsService.addPlaylist(action.playlist);
-                }),
-                map((playlist: Playlist) => {
-                    if (playlist.serverUrl && !this.dataService.isElectron) {
-                        this.router.navigate(['/xtreams/', playlist._id]);
-                    } else if (playlist.macAddress) {
-                        this.router.navigate(['stalker', playlist._id]);
-                    } else {
-                        this.router.navigate(['/playlists/', playlist._id]);
-                    }
-                    return playlist;
-                }),
-                map(async (playlist) => {
-                    if (playlist.serverUrl && this.dataService.isElectron) {
-                        // Use Electron database API
-                        await window.electron.dbCreatePlaylist({
-                            id: playlist._id.toString(),
-                            name: playlist.title || '',
-                            serverUrl: playlist.serverUrl || '',
-                            username: playlist.username || '',
-                            password: playlist.password || '',
-                            type: 'xtream',
-                        });
-                        console.log('Playlist created in database');
-                        this.router.navigate(['/xtreams/', playlist._id]);
-                    }
                 })
             );
         },
@@ -322,13 +321,9 @@ export class PlaylistEffects {
         () => {
             return this.actions$.pipe(
                 ofType(PlaylistActions.updatePlaylistMeta),
-                switchMap((action) => {
-                    // TODO update playlist in sqlite db
-
-                    return this.playlistsService.updatePlaylistMeta(
-                        action.playlist
-                    );
-                })
+                switchMap((action) =>
+                    this.playlistsService.updatePlaylistMeta(action.playlist)
+                )
             );
         },
         { dispatch: false }
@@ -372,37 +367,6 @@ export class PlaylistEffects {
         { dispatch: false }
     );
 
-    removeAll$ = createEffect(
-        () => {
-            return this.actions$.pipe(
-                ofType(PlaylistActions.removeAllPlaylists),
-                switchMap(async () => {
-                    // Delete from IndexedDB
-                    await firstValueFrom(this.playlistsService.removeAll());
-                    // Also delete from SQLite if running in Electron
-                    if ((window as any).electron?.dbDeleteAllPlaylists) {
-                        try {
-                            await (window as any).electron.dbDeleteAllPlaylists();
-                        } catch (error) {
-                            console.error(
-                                'Error deleting playlists from SQLite:',
-                                error
-                            );
-                        }
-                    }
-                    this.snackBar.open(
-                        this.translate.instant('SETTINGS.PLAYLISTS_REMOVED'),
-                        undefined,
-                        {
-                            duration: 2000,
-                        }
-                    );
-                })
-            );
-        },
-        { dispatch: false }
-    );
-
     setAdjacentChannelAsActive$ = createEffect(() => {
         return this.actions$.pipe(
             ofType(ChannelActions.setAdjacentChannelAsActive),
@@ -430,4 +394,18 @@ export class PlaylistEffects {
             })
         );
     });
+
+    private navigateToPlaylist(playlist: Playlist): void {
+        if (playlist.serverUrl) {
+            void this.router.navigate(['/workspace', 'xtreams', playlist._id]);
+            return;
+        }
+
+        if (playlist.macAddress) {
+            void this.router.navigate(['/workspace', 'stalker', playlist._id]);
+            return;
+        }
+
+        void this.router.navigate(['/workspace', 'playlists', playlist._id]);
+    }
 }

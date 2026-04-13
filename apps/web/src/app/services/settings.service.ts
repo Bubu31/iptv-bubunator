@@ -2,8 +2,62 @@ import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { StorageMap } from '@ngx-pwa/local-storage';
 import { catchError, map, Observable } from 'rxjs';
-import * as semver from 'semver';
 import { STORE_KEY, Theme } from 'shared-interfaces';
+
+const PRERELEASE_KEYWORDS = [
+    'beta',
+    'alpha',
+    'rc',
+    'preview',
+    'dev',
+    'canary',
+    'nightly',
+] as const;
+
+interface ParsedVersion {
+    major: number;
+    minor: number;
+    patch: number;
+    prerelease: boolean;
+}
+
+type LegacyMediaQueryList = MediaQueryList & {
+    addListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+    removeListener?: (listener: (event: MediaQueryListEvent) => void) => void;
+};
+
+function parseVersion(input: string): ParsedVersion | null {
+    const normalized = input.trim().replace(/^v/i, '');
+    const match = normalized.match(
+        /(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+]?([0-9A-Za-z.-]+))?/
+    );
+
+    if (!match) {
+        return null;
+    }
+
+    return {
+        major: Number(match[1] ?? 0),
+        minor: Number(match[2] ?? 0),
+        patch: Number(match[3] ?? 0),
+        prerelease: Boolean(match[4]),
+    };
+}
+
+function hasPrereleaseKeyword(value: string): boolean {
+    const normalized = value.toLowerCase();
+    return PRERELEASE_KEYWORDS.some((keyword) => normalized.includes(keyword));
+}
+
+function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
+    if (a.major !== b.major) {
+        return a.major - b.major;
+    }
+    if (a.minor !== b.minor) {
+        return a.minor - b.minor;
+    }
+    return a.patch - b.patch;
+}
 
 @Injectable({
     providedIn: 'root',
@@ -11,17 +65,81 @@ import { STORE_KEY, Theme } from 'shared-interfaces';
 export class SettingsService {
     private http = inject(HttpClient);
     private storage = inject(StorageMap);
+    private readonly systemThemeMediaQuery =
+        typeof window !== 'undefined' && 'matchMedia' in window
+            ? window.matchMedia('(prefers-color-scheme: dark)')
+            : null;
+    private readonly systemThemeChangeHandler = (
+        event: MediaQueryListEvent
+    ): void => {
+        this.applyResolvedTheme(
+            event.matches ? Theme.DarkTheme : Theme.LightTheme
+        );
+    };
+    private isSystemThemeSyncActive = false;
 
     /**
      * Changes the visual theme of the application
      * @param selectedTheme theme to set
      */
     changeTheme(selectedTheme: Theme): void {
-        if (selectedTheme === Theme.LightTheme) {
-            document.body.classList.remove('dark-theme');
-        } else if (selectedTheme === Theme.DarkTheme) {
-            document.body.classList.add('dark-theme');
+        this.stopSystemThemeSync();
+
+        if (selectedTheme === Theme.SystemTheme) {
+            this.startSystemThemeSync();
+            this.applyResolvedTheme(
+                this.systemThemeMediaQuery?.matches
+                    ? Theme.DarkTheme
+                    : Theme.LightTheme
+            );
+            return;
         }
+
+        this.applyResolvedTheme(selectedTheme);
+    }
+
+    private applyResolvedTheme(selectedTheme: Theme): void {
+        if (selectedTheme === Theme.DarkTheme) {
+            document.body.classList.add('dark-theme');
+            return;
+        }
+
+        document.body.classList.remove('dark-theme');
+    }
+
+    private startSystemThemeSync(): void {
+        if (!this.systemThemeMediaQuery || this.isSystemThemeSyncActive) {
+            return;
+        }
+
+        const mediaQuery = this.systemThemeMediaQuery as LegacyMediaQueryList;
+
+        if (mediaQuery.addEventListener) {
+            mediaQuery.addEventListener('change', this.systemThemeChangeHandler);
+        } else {
+            mediaQuery.addListener?.(this.systemThemeChangeHandler);
+        }
+
+        this.isSystemThemeSyncActive = true;
+    }
+
+    private stopSystemThemeSync(): void {
+        if (!this.systemThemeMediaQuery || !this.isSystemThemeSyncActive) {
+            return;
+        }
+
+        const mediaQuery = this.systemThemeMediaQuery as LegacyMediaQueryList;
+
+        if (mediaQuery.removeEventListener) {
+            mediaQuery.removeEventListener(
+                'change',
+                this.systemThemeChangeHandler
+            );
+        } else {
+            mediaQuery.removeListener?.(this.systemThemeChangeHandler);
+        }
+
+        this.isSystemThemeSyncActive = false;
     }
 
     /**
@@ -43,12 +161,12 @@ export class SettingsService {
         key: STORE_KEY,
         value: unknown,
         withCallback = false
-    ): Observable<unknown> | never {
+    ): Observable<unknown> | void {
         if (withCallback) {
             return this.storage.set(key, value);
-        } else {
-            this.storage.set(key, value).subscribe(() => {});
         }
+
+        this.storage.set(key, value).subscribe();
     }
 
     /**
@@ -64,34 +182,14 @@ export class SettingsService {
                 map((response) => {
                     // Filter out pre-release versions (beta, alpha, rc, etc.)
                     const stableReleases = response.filter((release) => {
-                        const releaseName = release.name.toLowerCase();
-
-                        // Check for beta/alpha/rc keywords in the release name
-                        const prereleaseKeywords = [
-                            'beta',
-                            'alpha',
-                            'rc',
-                            'preview',
-                            'dev',
-                            'canary',
-                            'nightly',
-                        ];
-                        const hasPrereleaseKeyword = prereleaseKeywords.some(
-                            (keyword) => releaseName.includes(keyword)
-                        );
-
-                        if (hasPrereleaseKeyword) {
+                        if (hasPrereleaseKeyword(release.name)) {
                             return false;
                         }
 
-                        // Validate version format
-                        const version = semver.valid(
-                            semver.coerce(release.name)
-                        );
+                        const version = parseVersion(release.name);
                         if (!version) return false;
 
-                        // Check if version has prerelease tags in semver format
-                        return !semver.prerelease(release.name);
+                        return !version.prerelease;
                     });
 
                     // Sort stable releases by creation date
@@ -121,9 +219,8 @@ export class SettingsService {
         currentVersion: string,
         latestVersion: string
     ): boolean {
-        // Clean and coerce versions to handle invalid formats
-        const cleanCurrent = semver.coerce(currentVersion);
-        const cleanLatest = semver.coerce(latestVersion);
+        const cleanCurrent = parseVersion(currentVersion);
+        const cleanLatest = parseVersion(latestVersion);
 
         if (!cleanCurrent || !cleanLatest) {
             console.warn('Invalid version format:', {
@@ -133,6 +230,6 @@ export class SettingsService {
             return false;
         }
 
-        return semver.lt(cleanCurrent, cleanLatest);
+        return compareVersions(cleanCurrent, cleanLatest) < 0;
     }
 }

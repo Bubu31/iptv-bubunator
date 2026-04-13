@@ -3,76 +3,28 @@
  * CRUD operations for playlists
  */
 
-import { eq } from 'drizzle-orm';
 import { ipcMain } from 'electron';
-import { getDatabase } from '../../database/connection';
-import * as schema from '../../database/schema';
+import { databaseWorkerClient } from '../../services/database-worker-client';
+import {
+    handleWorkerRequest,
+    requestWorkerWithEvents,
+} from './worker-events.utils';
 
-/**
- * Create a new playlist
- */
-ipcMain.handle(
-    'DB_CREATE_PLAYLIST',
-    async (
-        event,
-        playlist: {
-            id: string;
-            name: string;
-            serverUrl?: string;
-            username?: string;
-            password?: string;
-            type: string;
-        }
-    ) => {
-        try {
-            const db = await getDatabase();
-            await db.insert(schema.playlists).values({
-                id: playlist.id,
-                name: playlist.name,
-                serverUrl: playlist.serverUrl,
-                username: playlist.username,
-                password: playlist.password,
-                // enforce supported types
-                type: playlist.type as
-                    | 'xtream'
-                    | 'stalker'
-                    | 'm3u-file'
-                    | 'm3u-text'
-                    | 'm3u-url',
-            });
-            return { success: true };
-        } catch (error) {
-            console.error('Error creating playlist:', error);
-            throw error;
-        }
-    }
+handleWorkerRequest('DB_CREATE_PLAYLIST', (playlist: Record<string, unknown>) => playlist);
+handleWorkerRequest(
+    'DB_UPSERT_APP_PLAYLIST',
+    (playlist: Record<string, unknown>) => playlist
 );
-
-/**
- * Get playlist by ID
- */
-ipcMain.handle('DB_GET_PLAYLIST', async (event, playlistId: string) => {
-    try {
-        const db = await getDatabase();
-        const result = await db
-            .select()
-            .from(schema.playlists)
-            .where(eq(schema.playlists.id, playlistId))
-            .limit(1);
-        return result[0] || null;
-    } catch (error) {
-        console.error('Error getting playlist:', error);
-        throw error;
-    }
-});
-
-/**
- * Update playlist
- */
-ipcMain.handle(
+handleWorkerRequest(
+    'DB_UPSERT_APP_PLAYLISTS',
+    (playlists: Record<string, unknown>[]) => playlists
+);
+handleWorkerRequest('DB_GET_APP_PLAYLISTS', () => ({}));
+handleWorkerRequest('DB_GET_APP_PLAYLIST', (playlistId: string) => ({ playlistId }));
+handleWorkerRequest('DB_GET_PLAYLIST', (playlistId: string) => ({ playlistId }));
+handleWorkerRequest(
     'DB_UPDATE_PLAYLIST',
-    async (
-        event,
+    (
         playlistId: string,
         updates: {
             name?: string;
@@ -81,64 +33,61 @@ ipcMain.handle(
             serverUrl?: string;
             lastUpdated?: string;
         }
+    ) => ({
+        playlistId,
+        updates,
+    })
+);
+handleWorkerRequest('DB_GET_APP_STATE', (key: string) => ({ key }));
+handleWorkerRequest('DB_SET_APP_STATE', (key: string, value: string) => ({
+    key,
+    value,
+}));
+
+ipcMain.handle(
+    'DB_DELETE_PLAYLIST',
+    async (
+        event,
+        playlistId: string,
+        operationId?: string
     ) => {
         try {
-            const db = await getDatabase();
-            await db
-                .update(schema.playlists)
-                .set(updates)
-                .where(eq(schema.playlists.id, playlistId));
-            return { success: true };
+            return await requestWorkerWithEvents(
+                event,
+                'DB_DELETE_PLAYLIST',
+                {
+                    playlistId,
+                    operationId,
+                }
+            );
         } catch (error) {
-            console.error('Error updating playlist:', error);
+            console.error('Error handling DB_DELETE_PLAYLIST:', error);
             throw error;
         }
     }
 );
 
-/**
- * Delete playlist and all related data
- */
-ipcMain.handle('DB_DELETE_PLAYLIST', async (event, playlistId: string) => {
-    try {
-        const db = await getDatabase();
-
-        // Delete playlist (cascade will handle related data)
-        await db
-            .delete(schema.playlists)
-            .where(eq(schema.playlists.id, playlistId));
-
-        return { success: true };
-    } catch (error) {
-        console.error('Error deleting playlist:', error);
-        throw error;
+ipcMain.handle(
+    'DB_DELETE_ALL_PLAYLISTS',
+    async (event, operationId?: string) => {
+        try {
+            return await requestWorkerWithEvents(
+                event,
+                'DB_DELETE_ALL_PLAYLISTS',
+                { operationId }
+            );
+        } catch (error) {
+            console.error('Error handling DB_DELETE_ALL_PLAYLISTS:', error);
+            throw error;
+        }
     }
-});
+);
 
-/**
- * Delete all playlists and related data from SQLite
- */
-ipcMain.handle('DB_DELETE_ALL_PLAYLISTS', async () => {
+ipcMain.handle('DB_CANCEL_OPERATION', async (_event, operationId: string) => {
     try {
-        const db = await getDatabase();
-
-        // Delete in order respecting foreign key constraints
-        // First delete favorites and recently_viewed (they reference content)
-        await db.delete(schema.favorites);
-        await db.delete(schema.recentlyViewed);
-
-        // Then delete content (references categories)
-        await db.delete(schema.content);
-
-        // Then delete categories (references playlists)
-        await db.delete(schema.categories);
-
-        // Finally delete playlists
-        await db.delete(schema.playlists);
-
-        return { success: true };
+        return await databaseWorkerClient.cancel(operationId);
     } catch (error) {
-        console.error('Error deleting all playlists:', error);
+        console.error('Error handling DB_CANCEL_OPERATION:', error);
         throw error;
     }
 });

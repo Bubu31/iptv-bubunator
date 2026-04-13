@@ -1,8 +1,13 @@
 import { app, BrowserWindow } from 'electron';
+import { getElectronUserDataPath } from 'database';
 import fixPath from 'fix-path';
 import App from './app/app';
 import { initDatabase } from './app/database/connection';
 import DatabaseEvents from './app/events/database.events';
+import {
+    resetStaleDownloads,
+    setMainWindow as setDownloadsMainWindow,
+} from './app/events/database/downloads.events';
 import ElectronEvents from './app/events/electron.events';
 import EpgEvents from './app/events/epg.events';
 import PlayerEvents from './app/events/player.events';
@@ -13,9 +18,17 @@ import SharedEvents from './app/events/shared.events';
 import SquirrelEvents from './app/events/squirrel.events';
 import StalkerEvents from './app/events/stalker.events';
 import UpdateEvents from './app/events/update.events';
+import { isStartupTraceEnabled, trace } from './app/services/debug-trace';
+import { databaseWorkerClient } from './app/services/database-worker-client';
 import XtreamEvents from './app/events/xtream.events';
 
 app.setName('iptvnator');
+
+const electronUserDataPath = getElectronUserDataPath();
+
+if (electronUserDataPath) {
+    app.setPath('userData', electronUserDataPath);
+}
 
 export default class Main {
     static initialize() {
@@ -26,12 +39,23 @@ export default class Main {
     }
 
     static bootstrapApp() {
+        if (isStartupTraceEnabled()) {
+            trace('startup', 'bootstrap-app');
+        }
         App.main(app, BrowserWindow);
     }
 
     static async bootstrapAppEvents() {
+        if (isStartupTraceEnabled()) {
+            trace('startup', 'bootstrap-events:start');
+        }
+
         // Initialize database before other events
         await initDatabase();
+
+        if (isStartupTraceEnabled()) {
+            trace('startup', 'init-database:done');
+        }
 
         ElectronEvents.bootstrapElectronEvents();
         PlaylistEvents.bootstrapPlaylistEvents();
@@ -44,9 +68,23 @@ export default class Main {
         EpgEvents.bootstrapEpgEvents();
         RemoteControlEvents.bootstrapRemoteControlEvents();
 
+        // Set main window for downloads and reset stale downloads
+        if (App.mainWindow) {
+            setDownloadsMainWindow(App.mainWindow);
+        }
+        await resetStaleDownloads();
+
+        if (isStartupTraceEnabled()) {
+            trace('startup', 'reset-stale-downloads:done');
+        }
+
         // initialize auto updater service
         if (!App.isDevelopmentMode()) {
             UpdateEvents.initAutoUpdateService();
+        }
+
+        if (isStartupTraceEnabled()) {
+            trace('startup', 'bootstrap-events:done');
         }
     }
 }
@@ -61,5 +99,12 @@ Main.bootstrapApp();
 
 // Bootstrap app events after Electron app is ready
 app.whenReady().then(async () => {
+    if (isStartupTraceEnabled()) {
+        trace('startup', 'app.whenReady');
+    }
     await Main.bootstrapAppEvents();
+});
+
+app.on('before-quit', () => {
+    void databaseWorkerClient.shutdown();
 });

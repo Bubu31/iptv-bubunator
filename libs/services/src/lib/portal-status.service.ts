@@ -3,6 +3,15 @@ import { DataService } from './data.service';
 
 export type PortalStatus = 'active' | 'inactive' | 'expired' | 'unavailable';
 
+interface XtreamPortalStatusResponse {
+    payload?: {
+        user_info?: {
+            status?: string;
+            exp_date?: string;
+        };
+    };
+}
+
 @Injectable({
     providedIn: 'root',
 })
@@ -28,33 +37,38 @@ export class PortalStatusService {
                 normalizedUrl = serverUrl;
             }
 
-            let response = await this.dataService.sendIpcEvent(
-                'XTREAM_REQUEST',
-                {
-                    url: normalizedUrl,
-                    params: {
-                        password,
-                        username,
-                        action: 'get_account_info',
-                    },
-                }
-            );
-            response = response?.payload;
+            const response =
+                await this.dataService.sendIpcEvent<XtreamPortalStatusResponse>(
+                    'XTREAM_REQUEST',
+                    {
+                        url: normalizedUrl,
+                        params: {
+                            password,
+                            username,
+                            action: 'get_account_info',
+                        },
+                        suppressErrorLog: true,
+                    }
+                );
+            const payload = response?.payload;
 
-            if (!response?.user_info?.status) {
+            if (!payload?.user_info?.status) {
                 return 'unavailable';
             }
 
-            if (response.user_info.status === 'Active') {
+            if (payload.user_info.status === 'Active') {
+                if (!payload.user_info.exp_date) {
+                    return 'active';
+                }
+
                 const expDate = new Date(
-                    parseInt(response.user_info.exp_date) * 1000
+                    parseInt(payload.user_info.exp_date, 10) * 1000
                 );
                 return expDate < new Date() ? 'expired' : 'active';
             } else {
                 return 'inactive';
             }
         } catch (error) {
-            console.error('Error checking portal status:', error);
             return 'unavailable';
         }
     }

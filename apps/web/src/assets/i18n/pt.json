@@ -177,7 +177,8 @@
     },
     "THEMES": {
         "DARK_THEME": "Tema escuro",
-        "LIGHT_THEME": "Tema claro"
+        "LIGHT_THEME": "Tema claro",
+        "SYSTEM_THEME": "Tema do sistema"
     },
     "CHANNELS": {
         "SEARCH_CHANNEL": "Pesquisar canal",
@@ -243,7 +244,8 @@
         "DUTCH": "Nederlands",
         "BELARUSIAN": "Беларуская",
         "POLISH": "Polski",
-        "PORTUGUESE": "Português"
+        "PORTUGUESE": "Português",
+        "GREEK": "Ελληνικά"
     },
     "YES": "Sim",
     "NO": "Não",
@@ -343,7 +345,11 @@
         },
         "STREAM_URL_COPIED": "URL do stream copiado para a área de transferência",
         "COPY_STREAM_URL": "Copiar URL do Stream",
-        "SELECT_CATEGORY": "Selecione uma categoria"
+        "SELECT_CATEGORY": "Selecione uma categoria",
+        "SEARCH_VIEW": {
+            "RESULTS_FOUND": "{{count}} resultados encontrados",
+            "NO_RESULTS_FOR": "Nenhum resultado encontrado para \"{{term}}\""
+        }
     },
     "INFORMATION": "Informação",
     "REMOTE_CONTROL": {
