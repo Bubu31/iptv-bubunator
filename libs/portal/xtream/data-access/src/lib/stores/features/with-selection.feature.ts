@@ -42,7 +42,7 @@ export interface SelectionState {
  * Initial selection state
  */
 const initialSelectionState: SelectionState = {
-    selectedContentType: 'vod',
+    selectedContentType: 'live',
     selectedCategoryId: null,
     selectedItem: null,
     page: 0,

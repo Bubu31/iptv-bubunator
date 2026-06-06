@@ -5,6 +5,7 @@
     <div
         class="sidebar"
         [class.sidebar-collapsed]="isSidebarCollapsed()"
+        [class.theater-mode-hidden]="isTheaterMode()"
         appResizable
         [minWidth]="250"
         [maxWidth]="600"
@@ -94,7 +95,7 @@
     }
     @if (streamUrl) {
         @if (isEmbeddedPlayer) {
-            <div class="video-player">
+            <div class="video-player" [class.theater-mode-fullscreen]="isTheaterMode()">
                 <app-web-player-view
                     [streamUrl]="streamUrl"
                     [title]="activePlayback()?.title ?? ''"
@@ -103,6 +104,14 @@
                         handleExternalFallbackRequest($event)
                     "
                 />
+                <button
+                    class="theater-mode-btn"
+                    mat-icon-button
+                    (click)="toggleTheaterMode()"
+                    [matTooltip]="isTheaterMode() ? 'Exit theater mode (Esc)' : 'Theater mode'"
+                >
+                    <mat-icon>{{ isTheaterMode() ? 'fullscreen_exit' : 'fullscreen' }}</mat-icon>
+                </button>
             </div>
         }
         @if (supportsEpg) {
@@ -111,6 +120,7 @@
                 [class.epg-collapsed]="
                     isEmbeddedPlayer && isLiveEpgPanelCollapsed()
                 "
+                [class.theater-mode-hidden]="isTheaterMode()"
             >
                 @if (isEmbeddedPlayer) {
                     <app-live-epg-panel

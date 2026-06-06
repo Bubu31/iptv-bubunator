@@ -61,3 +61,78 @@
     line-height: 1.45;
     opacity: 0.74;
 }
+
+// Theater mode styles
+.theater-mode-hidden {
+    display: none !important;
+}
+
+.video-player {
+    position: relative;
+
+    .theater-mode-btn {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        z-index: 10;
+        opacity: 0;
+        transition: opacity 0.2s ease;
+        background: rgba(0, 0, 0, 0.6);
+        color: white;
+
+        &:hover {
+            background: rgba(0, 0, 0, 0.8);
+        }
+    }
+
+    &:hover .theater-mode-btn {
+        opacity: 1;
+    }
+
+    &.theater-mode-fullscreen {
+        position: fixed !important;
+        inset: 0 !important;
+        z-index: 1000 !important;
+        background: black !important;
+        height: 100vh !important;
+        width: 100vw !important;
+
+        .theater-mode-btn {
+            opacity: 1;
+        }
+
+        ::ng-deep {
+            app-web-player-view {
+                width: 100% !important;
+                height: 100% !important;
+                display: block !important;
+
+                app-art-player,
+                app-art-player > .artplayer-container {
+                    width: 100% !important;
+                    height: 100% !important;
+                }
+
+                app-vjs-player,
+                app-vjs-player > .video-js {
+                    width: 100% !important;
+                    height: 100% !important;
+                }
+
+                app-html-video-player,
+                app-html-video-player > #video-player {
+                    width: 100% !important;
+                    height: 100% !important;
+                }
+            }
+
+            .artplayer-app,
+            .art-video-player,
+            video {
+                width: 100% !important;
+                height: 100% !important;
+                object-fit: contain !important;
+            }
+        }
+    }
+}

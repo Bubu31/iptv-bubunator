@@ -196,6 +196,19 @@ export class LiveStreamLayoutComponent implements OnInit, OnDestroy {
         getPortalChannelSortModeLabel(this.liveChannelSortMode())
     );
 
+    readonly isTheaterMode = signal(false);
+
+    @HostListener('document:keydown.escape')
+    onEscapeKey() {
+        if (this.isTheaterMode()) {
+            this.isTheaterMode.set(false);
+        }
+    }
+
+    toggleTheaterMode() {
+        this.isTheaterMode.update((v) => !v);
+    }
+
     readonly selectedCategoryInfo = computed(() => {
         const categoryId = this.selectedCategoryId();
         if (!categoryId) return null;

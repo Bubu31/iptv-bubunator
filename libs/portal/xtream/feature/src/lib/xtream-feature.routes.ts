@@ -57,7 +57,7 @@ export function createXtreamRoutes(): Route[] {
             children: [
                 {
                     path: '',
-                    redirectTo: 'vod',
+                    redirectTo: 'live',
                     pathMatch: 'full',
                 },
                 {
@@ -78,11 +78,13 @@ export function createXtreamRoutes(): Route[] {
                             children: [
                                 {
                                     path: '',
-                                    loadComponent: loadCategoryContentViewComponent,
+                                    loadComponent:
+                                        loadCategoryContentViewComponent,
                                 },
                                 {
                                     path: ':categoryId',
-                                    loadComponent: loadCategoryContentViewComponent,
+                                    loadComponent:
+                                        loadCategoryContentViewComponent,
                                 },
                                 {
                                     path: ':categoryId/:vodId',
@@ -96,11 +98,13 @@ export function createXtreamRoutes(): Route[] {
                             children: [
                                 {
                                     path: '',
-                                    loadComponent: loadCategoryContentViewComponent,
+                                    loadComponent:
+                                        loadCategoryContentViewComponent,
                                 },
                                 {
                                     path: ':categoryId',
-                                    loadComponent: loadCategoryContentViewComponent,
+                                    loadComponent:
+                                        loadCategoryContentViewComponent,
                                 },
                                 {
                                     path: ':categoryId/:serialId',
