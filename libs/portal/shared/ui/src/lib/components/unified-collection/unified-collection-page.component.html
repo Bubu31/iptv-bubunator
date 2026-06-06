@@ -1,30 +1,29 @@
-@if (isLoading()) {
+<ng-content select="ng-template[unifiedCollectionDetail]"></ng-content>
+
+@if (detailContext(); as detailContext) {
+    <ng-container
+        [ngTemplateOutlet]="detailTemplate()?.templateRef ?? null"
+        [ngTemplateOutletContext]="detailContext"
+    />
+} @else if (isLoading()) {
     <div class="collection-header">
         <span class="collection-title">{{ title() | translate }}</span>
         <div class="collection-header-toggles">
             <span class="toggle-placeholder"></span>
             @if (showScopeToggle()) {
-                <span class="toggle-placeholder toggle-placeholder--scope"></span>
+                <span
+                    class="toggle-placeholder toggle-placeholder--scope"
+                ></span>
             }
         </div>
     </div>
     @if (selectedContentType() === 'live') {
         <div class="skeleton-list">
-            @for (row of skeletonRows; track row) {
-                <div class="list-skeleton-row" aria-hidden="true">
-                    <span class="list-skeleton-handle"></span>
-                    <span class="list-skeleton-avatar"></span>
-                    <div class="list-skeleton-text">
-                        <span
-                            class="grid-skeleton-line grid-skeleton-line--primary"
-                        ></span>
-                        <span
-                            class="grid-skeleton-line grid-skeleton-line--secondary"
-                        ></span>
-                    </div>
-                    <span class="list-skeleton-star"></span>
-                </div>
-            }
+            <app-channel-list-skeleton
+                [count]="12"
+                [showEpg]="true"
+                [actionCount]="1"
+            />
         </div>
     } @else {
         <div class="skeleton-grid">
@@ -48,6 +47,57 @@
 } @else {
     <div class="collection-header">
         <span class="collection-title">{{ title() | translate }}</span>
+
+        @if (showFavSortButton()) {
+            <button
+                type="button"
+                mat-icon-button
+                class="favorites-sort-button"
+                [matMenuTriggerFor]="favoritesSortMenu"
+                [matTooltip]="
+                    ('WORKSPACE.SORT_LABEL' | translate) +
+                    (favSortLabelKey() | translate)
+                "
+                [attr.aria-label]="'WORKSPACE.SORT_LABEL' | translate"
+            >
+                <mat-icon>sort_by_alpha</mat-icon>
+            </button>
+            <mat-menu #favoritesSortMenu="matMenu">
+                @for (option of favSortOptions; track option.mode) {
+                    <button
+                        mat-menu-item
+                        (click)="setFavSortMode(option.mode)"
+                    >
+                        <mat-icon>{{ option.icon }}</mat-icon>
+                        <span>{{ option.translationKey | translate }}</span>
+                        @if (favSortMode() === option.mode) {
+                            <mat-icon class="sort-check">check</mat-icon>
+                        }
+                    </button>
+                }
+            </mat-menu>
+        }
+
+        @if (showSidebarToggle()) {
+            <button
+                type="button"
+                mat-icon-button
+                class="collection-sidebar-toggle"
+                [attr.aria-label]="
+                    (isSidebarCollapsed()
+                        ? 'LAYOUT.SHOW_CHANNELS_LIST'
+                        : 'LAYOUT.HIDE_CHANNELS_LIST'
+                    ) | translate
+                "
+                [matTooltip]="'LAYOUT.TOGGLE_SIDEBAR_TOOLTIP' | translate"
+                [attr.aria-pressed]="isSidebarCollapsed()"
+                (click)="toggleSidebar()"
+            >
+                <mat-icon>{{
+                    isSidebarCollapsed() ? 'chevron_right' : 'chevron_left'
+                }}</mat-icon>
+            </button>
+        }
 
         <div class="collection-header-toggles">
             @if (showContentToggle()) {
@@ -97,13 +147,27 @@
                 </mat-button-toggle-group>
             }
 
-            @if (mode() === 'recent' && allItems().length > 0) {
+            @if (currentTypeItems().length > 0) {
                 <button
                     type="button"
                     mat-icon-button
-                    (click)="clearAllRecent()"
-                    [matTooltip]="'WORKSPACE.SHELL.CLEAR_RECENTLY_VIEWED_SECTION' | translate"
-                    [attr.aria-label]="'WORKSPACE.SHELL.CLEAR_RECENTLY_VIEWED_SECTION_ARIA' | translate"
+                    (click)="clearAllCurrent()"
+                    [matTooltip]="
+                        clearButtonTooltipKey()
+                            | translate
+                                : {
+                                      type:
+                                          currentTypeLabelKey() | translate,
+                                  }
+                    "
+                    [attr.aria-label]="
+                        clearButtonTooltipKey()
+                            | translate
+                                : {
+                                      type:
+                                          currentTypeLabelKey() | translate,
+                                  }
+                    "
                 >
                     <mat-icon>delete_sweep</mat-icon>
                 </button>
@@ -119,7 +183,11 @@
                     [mode]="mode()"
                     [searchTerm]="workspaceSearchTerm()"
                     [autoOpenItem]="pendingAutoOpenLiveItem()"
+                    [favoriteUids]="favoriteUidSet()"
+                    [sortMode]="favSortMode()"
+                    [isSidebarCollapsed]="isSidebarCollapsed()"
                     (removeItem)="onRemoveItem($event)"
+                    (favoriteToggled)="onFavoriteToggled($event)"
                     (reorderItems)="onReorder($event)"
                     (itemPlayed)="onItemPlayed($event)"
                     (autoOpenHandled)="onLiveAutoOpenHandled()"
@@ -133,6 +201,7 @@
                     [mode]="mode()"
                     [contentType]="'movie'"
                     [searchTerm]="workspaceSearchTerm()"
+                    (itemSelected)="onGridItemSelected($event)"
                     (removeItem)="onRemoveItem($event)"
                 />
             }
@@ -144,6 +213,7 @@
                     [mode]="mode()"
                     [contentType]="'series'"
                     [searchTerm]="workspaceSearchTerm()"
+                    (itemSelected)="onGridItemSelected($event)"
                     (removeItem)="onRemoveItem($event)"
                 />
             }
@@ -151,26 +221,22 @@
     }
 
     @if (!hasLive() && !hasMovies() && !hasSeries()) {
-        <div class="empty-state">
-            <mat-icon class="empty-icon">{{
-                workspaceSearchTerm()
-                    ? 'search_off'
-                    : mode() === 'favorites'
-                      ? 'favorite_border'
-                      : 'history'
-            }}</mat-icon>
-            <p class="empty-title">
-                @if (workspaceSearchTerm()) {
+        @if (workspaceSearchTerm()) {
+            <div class="empty-state">
+                <mat-icon class="empty-icon">search_off</mat-icon>
+                <p class="empty-title">
                     {{ 'WORKSPACE.GLOBAL_FAVORITES.NO_RESULTS' | translate }}
-                } @else {
-                    {{
-                        (mode() === 'favorites'
-                            ? 'PORTALS.NO_FAVORITES'
-                            : 'PORTALS.NO_RECENT_ITEMS'
-                        ) | translate
-                    }}
-                }
-            </p>
-        </div>
+                </p>
+            </div>
+        } @else {
+            <app-empty-state
+                type="no-data"
+                [icon]="emptyStateIcon()"
+                [titleKey]="emptyStateTitleKey()"
+                [descriptionKey]="emptyStateBodyKey()"
+                secondaryActionLabelKey="WORKSPACE.SHELL.GO_TO_DASHBOARD"
+                (secondaryActionClicked)="goToDashboard()"
+            />
+        }
     }
 }

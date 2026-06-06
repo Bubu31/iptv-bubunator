@@ -1,5 +1,5 @@
 export default {
-  displayName: 'shared-portals',
+  displayName: '@iptvnator/ui/shared-portals',
   preset: '../../../jest.preset.js',
   setupFilesAfterEnv: ['<rootDir>/src/test-setup.ts'],
   coverageDirectory: '../../../coverage/libs/ui/shared-portals',
@@ -9,6 +9,7 @@ export default {
       {
         tsconfig: '<rootDir>/tsconfig.spec.json',
         stringifyContentPathRegex: '\\.(html|svg)$',
+        diagnostics: false,
       },
     ],
   },

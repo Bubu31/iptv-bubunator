@@ -1,5 +1,12 @@
 import { AsyncPipe } from '@angular/common';
-import { NO_ERRORS_SCHEMA, signal } from '@angular/core';
+import {
+    Component,
+    Directive,
+    NO_ERRORS_SCHEMA,
+    input,
+    output,
+    signal,
+} from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Store } from '@ngrx/store';
@@ -14,24 +21,146 @@ import {
     selectChannels,
     selectChannelsLoading,
     selectCurrentEpgProgram,
-} from 'm3u-state';
+} from '@iptvnator/m3u-state';
 import { PlaylistContextFacade } from '@iptvnator/playlist/shared/util';
 import {
     PORTAL_EXTERNAL_PLAYBACK,
+    LIVE_EPG_PANEL_STATE_STORAGE_KEY,
     WorkspaceHeaderContextService,
 } from '@iptvnator/portal/shared/util';
-import { DataService, PlaylistsService, SettingsStore } from 'services';
+import {
+    DataService,
+    PlaylistsService,
+    RuntimeCapabilitiesService,
+    SettingsStore,
+} from '@iptvnator/services';
 import {
     Channel,
+    EpgProgram,
     Settings,
     VideoPlayer,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
+import { LiveEpgPanelSummary } from '@iptvnator/ui/shared-portals';
 import { Overlay } from '@angular/cdk/overlay';
-import { VideoPlayerComponent } from './video-player.component';
+import type { PlaybackFallbackRequest } from '@iptvnator/ui/playback';
+import type { VideoPlayerComponent as VideoPlayerComponentInstance } from './video-player.component';
+
+jest.unstable_mockModule('video.js', () => ({
+    default: jest.fn(),
+}));
+
+jest.unstable_mockModule('@yangkghjh/videojs-aspect-ratio-panel', () => ({}));
+jest.unstable_mockModule('videojs-contrib-quality-levels', () => ({}));
+jest.unstable_mockModule('videojs-quality-selector-hls', () => ({}));
+
+@Component({
+    selector: 'app-live-epg-panel',
+    standalone: true,
+    template: `
+        <div class="live-epg-panel-summary">{{ summary()?.title }}</div>
+        <ng-content />
+    `,
+})
+class StubLiveEpgPanelComponent {
+    readonly collapsed = input(false);
+    readonly summary = input<LiveEpgPanelSummary | null>(null);
+    readonly loading = input(false);
+    readonly showDateNavigator = input(false);
+    readonly selectedDate = input<string | null>(null);
+    readonly collapsedChange = output<boolean>();
+    readonly dateNavigation = output<'next' | 'prev'>();
+}
+
+@Component({
+    selector: 'app-channel-list-loading-state',
+    standalone: true,
+    template: '',
+})
+class StubChannelListLoadingStateComponent {
+    readonly view = input<string | null>(null);
+}
+
+@Component({
+    selector: 'app-sidebar',
+    standalone: true,
+    template: '',
+})
+class StubSidebarComponent {
+    readonly channels = input<Channel[]>([]);
+    readonly channelsLoading = input(false);
+    readonly showPlaylistHeader = input(false);
+    readonly activeView = input('');
+    readonly sidebarWidth = input(0);
+    readonly sidebarWidthRequested = output<number>();
+    readonly sidebarWidthRequestEnded = output<number>();
+    readonly sidebarToggleRequested = output<void>();
+}
+
+@Component({
+    selector: 'app-portal-empty-state',
+    standalone: true,
+    template: '<div class="stub-empty-state">{{ message() }}</div>',
+})
+class StubPortalEmptyStateComponent {
+    readonly icon = input('');
+    readonly message = input('');
+}
+
+@Component({
+    selector: 'app-audio-player',
+    standalone: true,
+    template: '',
+})
+class StubAudioPlayerComponent {
+    readonly url = input('');
+    readonly icon = input('');
+    readonly channelName = input('');
+}
+
+@Component({
+    selector: 'app-web-player-view',
+    standalone: true,
+    template: '',
+})
+class StubWebPlayerViewComponent {
+    readonly streamUrl = input('');
+    readonly title = input('');
+    readonly playback = input<unknown>(null);
+    readonly playerOverride = input<VideoPlayer | null>(null);
+    readonly volume = input(1);
+    readonly showCaptions = input(false);
+    readonly externalFallbackRequested = output<PlaybackFallbackRequest>();
+}
+
+@Component({
+    selector: 'app-epg-list',
+    standalone: true,
+    template: '',
+})
+class StubEpgListComponent {
+    readonly selectedDate = input<string | null>(null);
+    readonly showDateNavigator = input(false);
+    readonly archivePlaybackAvailable = input(false);
+    readonly selectedDateChange = output<string>();
+}
+
+@Directive({
+    selector: '[appResizable]',
+    standalone: true,
+})
+class StubResizableDirective {
+    readonly minWidth = input(0);
+    readonly maxWidth = input(0);
+    readonly defaultWidth = input(0);
+    readonly storageKey = input('');
+    readonly widthChange = output<number>();
+    readonly resizeEnd = output<number>();
+}
 
 describe('VideoPlayerComponent', () => {
-    let fixture: ComponentFixture<VideoPlayerComponent>;
-    let component: VideoPlayerComponent;
+    let VideoPlayerComponent: typeof import('./video-player.component').VideoPlayerComponent;
+    let fixture: ComponentFixture<VideoPlayerComponentInstance>;
+    let component: VideoPlayerComponentInstance;
     let headerContext: WorkspaceHeaderContextService;
 
     const playlistId = signal('playlist-1');
@@ -39,14 +168,15 @@ describe('VideoPlayerComponent', () => {
     const activePlaybackUrl = signal<string | null>(null);
     const channels = signal<Channel[]>([]);
     const channelsLoading = signal(false);
-    const currentEpgProgram = signal(null);
+    const currentEpgProgram = signal<EpgProgram | null>(null);
 
     const channels$ = new BehaviorSubject<Channel[]>([]);
     const activeChannel$ = new BehaviorSubject<Channel | null>(null);
-    const currentEpgProgram$ = new BehaviorSubject(null);
+    const currentEpgProgram$ = new BehaviorSubject<EpgProgram | null>(null);
 
     const player = signal<VideoPlayer>(VideoPlayer.VideoJs);
     const showCaptions = signal(false);
+    const originalElectron = window.electron;
 
     const overlayRef = {
         attach: jest.fn().mockReturnValue({ instance: {} }),
@@ -125,6 +255,9 @@ describe('VideoPlayerComponent', () => {
             })
         ),
     };
+    const dataServiceMock = {
+        sendIpcEvent: jest.fn(),
+    };
 
     const sampleChannel: Channel = {
         id: 'channel-1',
@@ -139,6 +272,10 @@ describe('VideoPlayerComponent', () => {
         },
     } as Channel;
 
+    beforeAll(async () => {
+        ({ VideoPlayerComponent } = await import('./video-player.component'));
+    });
+
     function syncStoreState(channel: Channel | null): void {
         activeChannel.set(channel);
         activeChannel$.next(channel);
@@ -147,8 +284,16 @@ describe('VideoPlayerComponent', () => {
     }
 
     beforeEach(async () => {
+        window.electron = {
+            platform: 'darwin',
+            updateRemoteControlStatus: jest.fn(),
+            onChannelChange: jest.fn(() => jest.fn()),
+            onRemoteControlCommand: jest.fn(() => jest.fn()),
+        } as typeof window.electron;
+
         syncStoreState(null);
         localStorage.removeItem('m3u-sidebar-width');
+        localStorage.removeItem(LIVE_EPG_PANEL_STATE_STORAGE_KEY);
         player.set(VideoPlayer.VideoJs);
         showCaptions.set(false);
         activePlaybackUrl.set(null);
@@ -159,6 +304,7 @@ describe('VideoPlayerComponent', () => {
         overlayRef.attach.mockClear();
         overlayRef.dispose.mockClear();
         storeMock.dispatch.mockClear();
+        dataServiceMock.sendIpcEvent.mockClear();
 
         await TestBed.configureTestingModule({
             imports: [VideoPlayerComponent],
@@ -189,8 +335,17 @@ describe('VideoPlayerComponent', () => {
                 },
                 {
                     provide: DataService,
+                    useValue: dataServiceMock,
+                },
+                {
+                    provide: RuntimeCapabilitiesService,
                     useValue: {
-                        sendIpcEvent: jest.fn(),
+                        get supportsEpg() {
+                            return Boolean(window.electron);
+                        },
+                        get isElectron() {
+                            return Boolean(window.electron);
+                        },
                     },
                 },
                 {
@@ -233,6 +388,14 @@ describe('VideoPlayerComponent', () => {
                 set: {
                     imports: [
                         AsyncPipe,
+                        StubAudioPlayerComponent,
+                        StubChannelListLoadingStateComponent,
+                        StubEpgListComponent,
+                        StubLiveEpgPanelComponent,
+                        StubPortalEmptyStateComponent,
+                        StubResizableDirective,
+                        StubSidebarComponent,
+                        StubWebPlayerViewComponent,
                         MockPipe(
                             TranslatePipe,
                             (value: string | null | undefined) => value ?? ''
@@ -248,7 +411,9 @@ describe('VideoPlayerComponent', () => {
     });
 
     afterEach(() => {
-        fixture.destroy();
+        fixture?.destroy();
+        localStorage.removeItem(LIVE_EPG_PANEL_STATE_STORAGE_KEY);
+        window.electron = originalElectron;
     });
 
     it('registers and clears the workspace multi-EPG header shortcut', () => {
@@ -275,7 +440,98 @@ describe('VideoPlayerComponent', () => {
             fixture.nativeElement.querySelector('.video-player')
         ).not.toBeNull();
         expect(
-            fixture.nativeElement.querySelector('app-vjs-player')
+            fixture.nativeElement.querySelector('app-web-player-view')
+        ).not.toBeNull();
+        expect(
+            fixture.nativeElement.querySelector('app-epg-list')
+        ).not.toBeNull();
+    });
+
+    it('hides EPG controls and the multi-EPG header action in browser/PWA playback', () => {
+        fixture.destroy();
+        window.electron = undefined as unknown as typeof window.electron;
+
+        fixture = TestBed.createComponent(VideoPlayerComponent);
+        component = fixture.componentInstance;
+        headerContext = TestBed.inject(WorkspaceHeaderContextService);
+        syncStoreState(sampleChannel);
+        player.set(VideoPlayer.VideoJs);
+
+        fixture.detectChanges();
+
+        expect(
+            fixture.nativeElement.querySelector('app-web-player-view')
+        ).not.toBeNull();
+        expect(fixture.nativeElement.querySelector('.epg')).toBeNull();
+        expect(fixture.nativeElement.querySelector('app-epg-list')).toBeNull();
+        expect(headerContext.action()).toBeNull();
+    });
+
+    it('does not publish remote-control status when the bridge is incomplete', () => {
+        fixture.destroy();
+        const updateRemoteControlStatus = jest.fn();
+        window.electron = {
+            updateRemoteControlStatus,
+        } as typeof window.electron;
+
+        fixture = TestBed.createComponent(VideoPlayerComponent);
+        component = fixture.componentInstance;
+        syncStoreState(sampleChannel);
+        fixture.detectChanges();
+
+        expect(updateRemoteControlStatus).not.toHaveBeenCalled();
+    });
+
+    it('opens MPV fallback with the active channel headers preserved', () => {
+        syncStoreState({
+            ...sampleChannel,
+            http: {
+                'user-agent': 'IPTVnator Test',
+                referrer: 'https://referrer.example.com',
+                origin: 'https://origin.example.com',
+            },
+        } as Channel);
+
+        component.handleExternalFallbackRequest({
+            player: 'mpv',
+            playback: {
+                streamUrl: 'https://archive.example.com/live.m3u8?utc=1',
+                title: 'Archive Sample',
+            },
+            diagnostic: {
+                code: 'unsupported-codec',
+                source: 'hls',
+                sourceUrl: 'https://archive.example.com/live.m3u8?utc=1',
+                container: 'm3u8',
+                audioCodecs: ['ac-3'],
+                videoCodecs: ['avc1.64001f'],
+                externalFallbackRecommended: true,
+            },
+        } satisfies PlaybackFallbackRequest);
+
+        expect(dataServiceMock.sendIpcEvent).toHaveBeenCalledWith(
+            'OPEN_MPV_PLAYER',
+            expect.objectContaining({
+                url: 'https://archive.example.com/live.m3u8?utc=1',
+                title: 'Sample TV',
+                'user-agent': 'IPTVnator Test',
+                referer: 'https://referrer.example.com',
+                origin: 'https://origin.example.com',
+            })
+        );
+    });
+
+    it('renders the embedded mpv inline player with the EPG panel', () => {
+        syncStoreState(sampleChannel);
+        player.set(VideoPlayer.EmbeddedMpv);
+
+        fixture.detectChanges();
+
+        expect(
+            fixture.nativeElement.querySelector('.video-player')
+        ).not.toBeNull();
+        expect(
+            fixture.nativeElement.querySelector('app-web-player-view')
         ).not.toBeNull();
         expect(
             fixture.nativeElement.querySelector('app-epg-list')
@@ -288,20 +544,73 @@ describe('VideoPlayerComponent', () => {
 
         fixture.detectChanges();
 
-        expect(
-            fixture.nativeElement.querySelector('.video-player')
-        ).toBeNull();
+        expect(fixture.nativeElement.querySelector('.video-player')).toBeNull();
         expect(
             fixture.nativeElement.querySelector('app-epg-list')
         ).not.toBeNull();
+        expect(
+            fixture.nativeElement.querySelector('app-live-epg-panel')
+        ).toBeNull();
+        expect(
+            fixture.nativeElement
+                .querySelector('.epg')
+                ?.classList.contains('epg-collapsed')
+        ).toBe(false);
+    });
+
+    it('restores the collapsed live EPG panel state for inline playback', () => {
+        fixture.destroy();
+        localStorage.setItem(LIVE_EPG_PANEL_STATE_STORAGE_KEY, 'collapsed');
+
+        fixture = TestBed.createComponent(VideoPlayerComponent);
+        component = fixture.componentInstance;
+        headerContext = TestBed.inject(WorkspaceHeaderContextService);
+        syncStoreState(sampleChannel);
+        player.set(VideoPlayer.VideoJs);
+
+        fixture.detectChanges();
+
+        expect(component.isLiveEpgPanelCollapsed()).toBe(true);
+        expect(
+            fixture.nativeElement
+                .querySelector('.epg')
+                .classList.contains('epg-collapsed')
+        ).toBe(true);
+    });
+
+    it('persists live EPG panel toggle changes', () => {
+        component.onLiveEpgPanelCollapsedChange(true);
+
+        expect(component.isLiveEpgPanelCollapsed()).toBe(true);
+        expect(localStorage.getItem(LIVE_EPG_PANEL_STATE_STORAGE_KEY)).toBe(
+            'collapsed'
+        );
+
+        component.onLiveEpgPanelCollapsedChange(false);
+
+        expect(localStorage.getItem(LIVE_EPG_PANEL_STATE_STORAGE_KEY)).toBe(
+            'expanded'
+        );
+    });
+
+    it('renders the current EPG program summary for the inline panel', () => {
+        syncStoreState(sampleChannel);
+        player.set(VideoPlayer.VideoJs);
+        currentEpgProgram.set(buildProgram('Current Show'));
+        currentEpgProgram$.next(buildProgram('Current Show'));
+
+        fixture.detectChanges();
+
+        expect(
+            fixture.nativeElement.querySelector('.live-epg-panel-summary')
+                .textContent
+        ).toContain('Current Show');
     });
 
     it('uses the active playback override url when archive playback is active', () => {
         syncStoreState(sampleChannel);
         player.set(VideoPlayer.VideoJs);
-        activePlaybackUrl.set(
-            'http://localhost/archive.m3u8?utc=123&lutc=456'
-        );
+        activePlaybackUrl.set('http://localhost/archive.m3u8?utc=123&lutc=456');
 
         fixture.detectChanges();
 
@@ -400,14 +709,57 @@ describe('VideoPlayerComponent', () => {
         expect(overlayRef.attach).toHaveBeenCalledTimes(1);
     });
 
-    it('switches channels by number through the store action', () => {
+    it('switches channels by number through a playback request', () => {
         syncStoreState(sampleChannel);
         fixture.detectChanges();
 
         component.switchToChannelByNumber(1);
 
         expect(storeMock.dispatch).toHaveBeenCalledWith(
-            ChannelActions.setActiveChannel({ channel: sampleChannel })
+            ChannelActions.setActiveChannel({
+                channel: sampleChannel,
+                startPlayback: true,
+            })
+        );
+    });
+
+    it('changes channels from remote navigation through a playback request', () => {
+        const nextChannel = {
+            ...sampleChannel,
+            id: 'channel-2',
+            url: 'http://localhost/next.m3u8',
+            name: 'Next TV',
+        };
+        activeChannel.set(sampleChannel);
+        activeChannel$.next(sampleChannel);
+        channels.set([sampleChannel, nextChannel]);
+        channels$.next([sampleChannel, nextChannel]);
+        fixture.detectChanges();
+
+        (
+            component as unknown as {
+                handleRemoteChannelChange(direction: 'up' | 'down'): void;
+            }
+        ).handleRemoteChannelChange('down');
+
+        expect(storeMock.dispatch).toHaveBeenCalledWith(
+            ChannelActions.setActiveChannel({
+                channel: nextChannel,
+                startPlayback: true,
+            })
         );
     });
 });
+
+function buildProgram(title: string): EpgProgram {
+    return {
+        start: '2026-04-05T11:30:00.000Z',
+        stop: '2026-04-05T12:30:00.000Z',
+        channel: 'sample-tvg-id',
+        title,
+        desc: null,
+        category: null,
+        startTimestamp: 1775388600,
+        stopTimestamp: 1775392200,
+    };
+}

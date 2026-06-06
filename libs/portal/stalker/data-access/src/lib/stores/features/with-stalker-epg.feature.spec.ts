@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { signalStore, withState } from '@ngrx/signals';
-import { DataService } from 'services';
-import { EpgItem, Playlist } from 'shared-interfaces';
+import { DataService, RuntimeCapabilitiesService } from '@iptvnator/services';
+import { EpgItem, Playlist } from '@iptvnator/shared/interfaces';
 import { StalkerSessionService } from '../../stalker-session.service';
 import { withStalkerEpg } from './with-stalker-epg.feature';
 
@@ -38,11 +38,13 @@ describe('withStalkerEpg', () => {
     let dataService: {
         sendIpcEvent: jest.Mock<Promise<unknown>, unknown[]>;
     };
+    let runtimeSupportsEpg: boolean;
     let stalkerSessionService: {
         makeAuthenticatedRequest: jest.Mock<Promise<unknown>, unknown[]>;
     };
 
     beforeEach(() => {
+        runtimeSupportsEpg = true;
         dataService = {
             sendIpcEvent: jest.fn(),
         };
@@ -54,6 +56,14 @@ describe('withStalkerEpg', () => {
             providers: [
                 TestStalkerEpgStore,
                 { provide: DataService, useValue: dataService },
+                {
+                    provide: RuntimeCapabilitiesService,
+                    useValue: {
+                        get supportsEpg() {
+                            return runtimeSupportsEpg;
+                        },
+                    },
+                },
                 {
                     provide: StalkerSessionService,
                     useValue: stalkerSessionService,
@@ -93,16 +103,43 @@ describe('withStalkerEpg', () => {
         ]);
     });
 
+    it('does not request short EPG in browser/PWA mode', async () => {
+        runtimeSupportsEpg = false;
+
+        const result = await store.fetchChannelEpg('10001');
+
+        expect(result).toEqual([]);
+        expect(dataService.sendIpcEvent).not.toHaveBeenCalled();
+        expect(
+            stalkerSessionService.makeAuthenticatedRequest
+        ).not.toHaveBeenCalled();
+    });
+
     it('loads bulk EPG once and projects selected-channel programs from the cache', async () => {
         dataService.sendIpcEvent.mockResolvedValue({
             js: {
                 data: {
                     '10001': [
-                        buildEntry('10001', 'Morning Show', 1744358400, 1744362000),
-                        buildEntry('10001', 'Current Show', 1744362000, 1744365600),
+                        buildEntry(
+                            '10001',
+                            'Morning Show',
+                            1744358400,
+                            1744362000
+                        ),
+                        buildEntry(
+                            '10001',
+                            'Current Show',
+                            1744362000,
+                            1744365600
+                        ),
                     ],
                     '10002': [
-                        buildEntry('10002', 'Other Channel', 1744362000, 1744365600),
+                        buildEntry(
+                            '10002',
+                            'Other Channel',
+                            1744362000,
+                            1744365600
+                        ),
                     ],
                 },
             },

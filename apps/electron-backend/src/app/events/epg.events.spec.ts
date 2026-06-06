@@ -2,6 +2,7 @@ import type EpgEventsType from './epg.events';
 
 const mockWorkerInstances: any[] = [];
 const resolveWorkerRuntimeBootstrap = jest.fn();
+const getDatabase = jest.fn();
 
 jest.mock('electron', () => ({
     app: {
@@ -39,11 +40,12 @@ jest.mock('../workers/worker-runtime-paths', () => ({
 }));
 
 jest.mock('../database/connection', () => ({
-    getDatabase: jest.fn(),
+    getDatabase: (...args: unknown[]) => getDatabase(...args),
 }));
 
 describe('EpgEvents', () => {
     let EpgEvents: typeof EpgEventsType;
+    let EpgWorkerService: typeof import('./epg-worker.service').EpgWorkerService;
     let consoleLogSpy: jest.SpyInstance;
     let consoleErrorSpy: jest.SpyInstance;
 
@@ -62,11 +64,14 @@ describe('EpgEvents', () => {
         });
 
         ({ default: EpgEvents } = await import('./epg.events'));
+        ({ EpgWorkerService } = await import('./epg-worker.service'));
     });
 
     afterEach(() => {
+        jest.useRealTimers();
         consoleLogSpy.mockRestore();
         consoleErrorSpy.mockRestore();
+        getDatabase.mockReset();
     });
 
     async function flushPromises(): Promise<void> {
@@ -127,5 +132,176 @@ describe('EpgEvents', () => {
             name: 'WorkerPathResolutionError',
             message: expect.stringContaining('epg-parser.worker.js'),
         });
+    });
+
+    it('rejects when the EPG clear worker exits before completion', async () => {
+        const workerService = new EpgWorkerService('[Test EPG]', 1000);
+        const clearPromise = workerService.clearEpgData();
+        const worker = mockWorkerInstances[0];
+
+        worker.emit('exit', 0);
+
+        await expect(clearPromise).rejects.toThrow(
+            'Clear worker exited unexpectedly (code 0)'
+        );
+    });
+
+    it('rejects when the EPG clear worker never responds', async () => {
+        jest.useFakeTimers();
+
+        const workerService = new EpgWorkerService('[Test EPG]', 25);
+        const clearPromise = workerService.clearEpgData();
+        const worker = mockWorkerInstances[0];
+
+        worker.emit('message', { type: 'READY' });
+        jest.advanceTimersByTime(25);
+
+        await expect(clearPromise).rejects.toThrow('EPG clear timed out after');
+        expect(worker.terminate).toHaveBeenCalled();
+    });
+
+    it('falls back to case-insensitive channel id lookup for EPG programs', async () => {
+        const select = jest.fn();
+        const programLimitExact = jest.fn().mockResolvedValue([]);
+        const channelLimit = jest
+            .fn()
+            .mockResolvedValue([{ id: 'BBC.ONE.UK', displayName: 'BBC One' }]);
+        const programLimitResolved = jest.fn().mockResolvedValue([
+            {
+                id: 1,
+                channelId: 'BBC.ONE.UK',
+                start: '2026-04-14T10:00:00Z',
+                stop: '2026-04-14T11:00:00Z',
+                title: 'News',
+                description: null,
+                category: null,
+                iconUrl: null,
+                rating: null,
+                episodeNum: null,
+            },
+        ]);
+
+        const from = jest
+            .fn()
+            .mockReturnValueOnce({
+                where: jest.fn().mockReturnValue({
+                    orderBy: jest.fn().mockReturnValue({
+                        limit: programLimitExact,
+                    }),
+                }),
+            })
+            .mockReturnValueOnce({
+                where: jest.fn().mockReturnValue({
+                    limit: channelLimit,
+                }),
+            })
+            .mockReturnValueOnce({
+                where: jest.fn().mockReturnValue({
+                    orderBy: jest.fn().mockReturnValue({
+                        limit: programLimitResolved,
+                    }),
+                }),
+            });
+
+        select.mockImplementation(() => ({ from }));
+
+        getDatabase.mockResolvedValue({ select });
+
+        const programs = await (EpgEvents as unknown as Record<string, any>)[
+            'handleGetChannelPrograms'
+        ]('bbc.one.uk');
+
+        expect(programs).toHaveLength(1);
+        expect(programs[0].channel).toBe('BBC.ONE.UK');
+    });
+
+    it('resolves channel metadata using exact id, case-insensitive id, and display name fallback', async () => {
+        const where = jest.fn().mockResolvedValue([
+            {
+                id: 'BBC.ONE.UK',
+                displayName: 'BBC One',
+                iconUrl: 'https://example.com/bbc-one.png',
+            },
+            {
+                id: 'guide-news',
+                displayName: 'Guide News',
+                iconUrl: 'https://example.com/guide-news.png',
+            },
+        ]);
+        const from = jest.fn().mockReturnValue({ where });
+        const select = jest.fn().mockReturnValue({ from });
+
+        getDatabase.mockResolvedValue({ select });
+
+        const metadata = await (EpgEvents as unknown as Record<string, any>)[
+            'handleGetChannelMetadata'
+        ](['BBC.ONE.UK', 'bbc.one.uk', 'Guide News', 'Missing Channel']);
+
+        expect(metadata).toEqual({
+            'BBC.ONE.UK': {
+                id: 'BBC.ONE.UK',
+                displayName: 'BBC One',
+                iconUrl: 'https://example.com/bbc-one.png',
+            },
+            'bbc.one.uk': {
+                id: 'BBC.ONE.UK',
+                displayName: 'BBC One',
+                iconUrl: 'https://example.com/bbc-one.png',
+            },
+            'Guide News': {
+                id: 'guide-news',
+                displayName: 'Guide News',
+                iconUrl: 'https://example.com/guide-news.png',
+            },
+            'Missing Channel': null,
+        });
+    });
+
+    it('drops malformed EPG rows with invalid stop dates', async () => {
+        const select = jest.fn();
+        const from = jest.fn();
+        const where = jest.fn();
+        const orderBy = jest.fn();
+        const limit = jest.fn();
+
+        select.mockImplementation(() => ({ from }));
+        from.mockReturnValue({ where });
+        where.mockReturnValue({ orderBy });
+        orderBy.mockReturnValue({ limit });
+        limit.mockResolvedValue([
+            {
+                id: 1,
+                channelId: 'id2e2cd03c90ad',
+                start: '2026-04-14T20:00:00+00:00',
+                stop: '2026-04-14T21:00:00+00:00',
+                title: 'valid',
+                description: null,
+                category: null,
+                iconUrl: null,
+                rating: null,
+                episodeNum: null,
+            },
+            {
+                id: 2,
+                channelId: 'id2e2cd03c90ad',
+                start: '2026-04-14T21:00:00+00:00',
+                stop: '',
+                title: 'invalid',
+                description: null,
+                category: null,
+                iconUrl: null,
+                rating: null,
+                episodeNum: null,
+            },
+        ]);
+
+        getDatabase.mockResolvedValue({ select });
+
+        const programs = await (EpgEvents as unknown as Record<string, any>)[
+            'handleGetChannelPrograms'
+        ]('id2e2cd03c90ad');
+
+        expect(programs).toHaveLength(1);
+        expect(programs[0].title).toBe('valid');
     });
 });

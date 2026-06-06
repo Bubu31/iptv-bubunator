@@ -14,13 +14,14 @@ import {
     selectActivePlaylistId,
     selectAllPlaylistsMeta,
     selectPlaylistsLoadingFlag,
-} from 'm3u-state';
+} from '@iptvnator/m3u-state';
 import { filter } from 'rxjs';
-import { PlaylistMeta } from 'shared-interfaces';
+import { PlaylistMeta } from '@iptvnator/shared/interfaces';
 import {
     PortalProvider,
     PortalRailSection,
 } from '@iptvnator/portal/shared/util';
+import { RuntimeCapabilitiesService } from '@iptvnator/services';
 
 export interface PlaylistRouteContext {
     inWorkspace: boolean;
@@ -69,6 +70,7 @@ const M3U_SECTIONS = ['all', 'groups', 'favorites', 'recent'] as const;
 @Injectable({ providedIn: 'root' })
 export class PlaylistContextFacade {
     private readonly destroyRef = inject(DestroyRef);
+    private readonly runtime = inject(RuntimeCapabilitiesService);
     private readonly router = inject(Router);
     private readonly store = inject(Store);
 
@@ -346,7 +348,7 @@ export class PlaylistContextFacade {
 
     private supportsSectionNavigation(provider: PortalProvider): boolean {
         if (provider === 'xtreams') {
-            return Boolean(window.electron);
+            return this.runtime.supportsXtreamSectionNavigation;
         }
 
         return true;

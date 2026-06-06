@@ -17,10 +17,14 @@ export interface StalkerPortalItem {
     cover?: string;
     logo?: string;
     poster_url?: string;
-    /** 'itv' | 'vod' | 'series' — Stalker content type */
+    /** Stalker content/category type such as 'itv', 'radio', 'vod', or 'series'. */
     category_id?: string | number;
     stream_type?: string;
+    /** Radio marker returned by some Stalker portals for radio station lists. */
+    radio?: boolean | number | string;
     is_series?: boolean | number | string;
+    /** Embedded VOD-series episode numbers preserved for VOD favorites. */
+    series?: unknown[];
     added_at?: string | number;
     cmd?: string;
 }

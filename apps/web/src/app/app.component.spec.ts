@@ -4,11 +4,11 @@ import { Router } from '@angular/router';
 import { Actions } from '@ngrx/effects';
 import { MockStore, provideMockStore } from '@ngrx/store/testing';
 import { TranslateService } from '@ngx-translate/core';
-import { EpgService } from '@iptvnator/epg/data-access';
+import { EpgRuntimeBridgeService, EpgService } from '@iptvnator/epg/data-access';
 import { WORKSPACE_SHELL_ACTIONS } from '@iptvnator/workspace/shell/util';
 import { MockProvider } from 'ng-mocks';
 import { EMPTY, of } from 'rxjs';
-import { DataService } from 'services';
+import { DataService, RuntimeCapabilitiesService } from '@iptvnator/services';
 import {
     Language,
     Settings,
@@ -17,8 +17,8 @@ import {
     StreamFormat,
     Theme,
     VideoPlayer,
-} from 'shared-interfaces';
-import { PlaylistActions } from 'm3u-state';
+} from '@iptvnator/shared/interfaces';
+import { PlaylistActions } from '@iptvnator/m3u-state';
 import { AppComponent } from './app.component';
 import { ElectronServiceStub } from './services/electron.service.stub';
 import { SettingsService } from './services/settings.service';
@@ -36,6 +36,7 @@ const DEFAULT_SETTINGS: Settings = {
     player: VideoPlayer.VideoJs,
     epgUrl: [],
     streamFormat: StreamFormat.M3u8StreamFormat,
+    openStreamOnDoubleClick: false,
     language: Language.ENGLISH,
     showCaptions: false,
     showDashboard: true,
@@ -43,11 +44,15 @@ const DEFAULT_SETTINGS: Settings = {
     showExternalPlaybackBar: true,
     theme: Theme.SystemTheme,
     mpvPlayerPath: '',
+    mpvPlayerArguments: '',
     mpvReuseInstance: false,
     vlcPlayerPath: '',
+    vlcPlayerArguments: '',
+    vlcReuseInstance: false,
     remoteControl: false,
     remoteControlPort: 8765,
     downloadFolder: '',
+    recordingFolder: '',
 };
 
 describe('AppComponent', () => {
@@ -59,9 +64,23 @@ describe('AppComponent', () => {
     let snackBar: MatSnackBar;
     let store: MockStore;
     let translateService: TranslateService;
-    const originalElectron = window.electron;
+    let runtimeCapabilities: Partial<RuntimeCapabilitiesService>;
+    let epgBridge: Partial<EpgRuntimeBridgeService>;
 
     beforeEach(waitForAsync(() => {
+        runtimeCapabilities = {
+            isElectron: true,
+            isMacOS: false,
+        };
+        epgBridge = {
+            checkFreshness: jest.fn().mockResolvedValue({
+                freshUrls: [],
+                staleUrls: [],
+            }),
+            supportsImport: true,
+            supportsSourceFreshness: true,
+        };
+
         TestBed.configureTestingModule({
             imports: [AppComponent],
             providers: [
@@ -78,9 +97,17 @@ describe('AppComponent', () => {
                     provide: SettingsService,
                     useClass: MockSettingsService,
                 },
+                {
+                    provide: RuntimeCapabilitiesService,
+                    useValue: runtimeCapabilities as RuntimeCapabilitiesService,
+                },
                 MockProvider(EpgService, {
                     fetchEpg: jest.fn(),
                 }),
+                {
+                    provide: EpgRuntimeBridgeService,
+                    useValue: epgBridge,
+                },
                 MockProvider(Router, {
                     navigateByUrl: jest.fn(),
                 }),
@@ -112,13 +139,6 @@ describe('AppComponent', () => {
     }));
 
     beforeEach(() => {
-        window.electron = {
-            checkEpgFreshness: jest.fn().mockResolvedValue({
-                freshUrls: [],
-                staleUrls: [],
-            }),
-        } as unknown as typeof window.electron;
-
         fixture = TestBed.createComponent(AppComponent);
         epgService = TestBed.inject(EpgService);
         router = TestBed.inject(Router);
@@ -129,10 +149,6 @@ describe('AppComponent', () => {
         store = TestBed.inject(MockStore);
         translateService = TestBed.inject(TranslateService);
         component = fixture.componentInstance;
-    });
-
-    afterEach(() => {
-        window.electron = originalElectron;
     });
 
     it('should create the component', () => {
@@ -183,15 +199,10 @@ describe('AppComponent', () => {
             language: Language.SPANISH,
             theme: Theme.DarkTheme,
         };
-        const checkEpgFreshness = jest.fn().mockResolvedValue({
+        epgBridge.checkFreshness = jest.fn().mockResolvedValue({
             freshUrls: [],
             staleUrls: settings.epgUrl,
         });
-
-        window.electron = {
-            ...window.electron,
-            checkEpgFreshness,
-        } as unknown as typeof window.electron;
         settingsService.getValueFromLocalStorage.mockReturnValue(of(settings));
         jest.spyOn(settingsService, 'changeTheme');
         jest.spyOn(translateService, 'use');
@@ -203,8 +214,26 @@ describe('AppComponent', () => {
         expect(settingsService.changeTheme).toHaveBeenCalledWith(
             Theme.DarkTheme
         );
-        expect(checkEpgFreshness).toHaveBeenCalledWith(settings.epgUrl, 12);
+        expect(epgBridge.checkFreshness).toHaveBeenCalledWith(
+            settings.epgUrl,
+            12
+        );
         expect(epgService.fetchEpg).toHaveBeenCalledWith(settings.epgUrl);
         expect(snackBar.open).not.toHaveBeenCalled();
+    });
+
+    it('does not fetch EPG settings when the EPG bridge cannot import EPG', async () => {
+        const settings: Settings = {
+            ...DEFAULT_SETTINGS,
+            epgUrl: ['https://example.com/epg.xml'],
+        };
+        epgBridge.supportsImport = false;
+        settingsService.getValueFromLocalStorage.mockReturnValue(of(settings));
+
+        component.initSettings();
+        await fixture.whenStable();
+
+        expect(epgBridge.checkFreshness).not.toHaveBeenCalled();
+        expect(epgService.fetchEpg).not.toHaveBeenCalled();
     });
 });

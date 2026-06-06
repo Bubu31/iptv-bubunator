@@ -1,4 +1,4 @@
-import { StalkerPortalActions } from 'shared-interfaces';
+import { StalkerPortalActions } from '@iptvnator/shared/interfaces';
 
 export const StalkerContentTypes = {
     stb: {
@@ -23,10 +23,10 @@ export const StalkerContentTypes = {
         getCategoryAction: StalkerPortalActions.GetCategories,
         getLink: StalkerPortalActions.CreateLink,
     },
-    /* radio: {
+    radio: {
         title: 'Radio',
         getContentAction: StalkerPortalActions.GetOrderedList,
-        getCategoryAction: StalkerPortalActions.GetOrderedList,
+        getCategoryAction: StalkerPortalActions.GetCategories,
         getLink: StalkerPortalActions.CreateLink,
-    }, */
+    },
 };

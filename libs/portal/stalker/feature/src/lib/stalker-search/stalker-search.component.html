@@ -15,7 +15,17 @@
             [isSeries]="inlineDetail().isSeries"
             [vodDetailsItem]="inlineDetail().vodDetailsItem"
             [isFavorite]="isSelectedVodFavorite()"
+            [playbackPosition]="selectedVodPlaybackPosition()"
+            [inlinePlayback]="inlinePlayback()"
+            [externalPlayback]="externalPlayback.activeSession()"
             (playClicked)="onVodPlay($event)"
+            (resumeClicked)="onVodResume($event)"
+            (inlineTimeUpdated)="handleInlineTimeUpdate($event)"
+            (inlinePlaybackClosed)="closeInlinePlayer()"
+            (streamUrlCopied)="showCopyNotification()"
+            (inlineExternalFallbackRequested)="
+                handleExternalFallbackRequest($event)
+            "
             (favoriteToggled)="onVodFavoriteToggled($event)"
             (backClicked)="onVodBack()"
         />
@@ -38,7 +48,7 @@
         <div class="results-grid">
             @for (item of searchResultsResource.value(); track item.id) {
                 <app-content-card
-                    [title]="item.o_name || item.name"
+                    [title]="item.o_name || item.name || ''"
                     [posterUrl]="item.screenshot_uri"
                     [type]="selectedFilterType() === 'vod' ? 'movie' : 'series'"
                     [showPlaceholder]="true"

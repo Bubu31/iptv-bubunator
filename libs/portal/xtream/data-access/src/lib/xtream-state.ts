@@ -1,17 +1,21 @@
-import { GlobalSearchResult } from 'services';
+import { GlobalSearchResult } from '@iptvnator/services';
 import {
     EpgItem,
     XtreamCategory,
     XtreamLiveStream,
     XtreamSerieItem,
     XtreamVodStream,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import {
     XtreamContentItem,
     XtreamPlaylistData,
 } from './data-sources/xtream-data-source.interface';
 
 export type ContentType = 'live' | 'vod' | 'series';
+export type XtreamCachedContentScope =
+    | ContentType
+    | 'search'
+    | 'recently-added';
 export type XtreamContentLoadState = 'idle' | 'loading' | 'ready' | 'error';
 export type XtreamContentLoadStateByType = Record<
     ContentType,

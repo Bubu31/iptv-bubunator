@@ -11,14 +11,15 @@ import {
     XtreamLiveStream,
     XtreamSerieItem,
     XtreamVodStream,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import { createLogger } from '@iptvnator/portal/shared/util';
 import {
     DatabaseService,
     DbOperationEvent,
     isDbAbortError,
+    XtreamPendingRestoreService,
     XtreamImportStatus,
-} from 'services';
+} from '@iptvnator/services';
 import {
     DbCategoryType,
     XTREAM_DATA_SOURCE,
@@ -31,14 +32,14 @@ import {
 import {
     ContentType,
     PortalStatusType,
+    XtreamCachedContentScope,
     XtreamContentInitBlockReason,
     XtreamContentLoadState,
     XtreamContentLoadStateByType,
 } from '../../xtream-state';
 
-const cancelledPlaylistInitializationLockKey = (
-    playlistId: string
-): string => `xtream-init-cancelled:${playlistId}`;
+const cancelledPlaylistInitializationLockKey = (playlistId: string): string =>
+    `xtream-init-cancelled:${playlistId}`;
 
 const hasCancelledPlaylistInitializationLock = (
     playlistId: string
@@ -54,9 +55,7 @@ const hasCancelledPlaylistInitializationLock = (
     }
 };
 
-const setCancelledPlaylistInitializationLock = (
-    playlistId: string
-): void => {
+const setCancelledPlaylistInitializationLock = (playlistId: string): void => {
     try {
         localStorage.setItem(
             cancelledPlaylistInitializationLockKey(playlistId),
@@ -67,9 +66,7 @@ const setCancelledPlaylistInitializationLock = (
     }
 };
 
-const clearCancelledPlaylistInitializationLock = (
-    playlistId: string
-): void => {
+const clearCancelledPlaylistInitializationLock = (playlistId: string): void => {
     try {
         localStorage.removeItem(
             cancelledPlaylistInitializationLockKey(playlistId)
@@ -97,6 +94,9 @@ export interface ContentState {
     importCount: number;
     importPhase: string | null;
     itemsToImport: number;
+    activeImportContentType: ContentType | null;
+    activeImportCurrentCount: number;
+    activeImportTotalCount: number;
     activeImportSessionId: string | null;
     activeImportOperationIds: string[];
     isContentInitialized: boolean;
@@ -127,6 +127,9 @@ const initialContentState: ContentState = {
     importCount: 0,
     importPhase: null,
     itemsToImport: 0,
+    activeImportContentType: null,
+    activeImportCurrentCount: 0,
+    activeImportTotalCount: 0,
     activeImportSessionId: null,
     activeImportOperationIds: [],
     isContentInitialized: false,
@@ -144,6 +147,7 @@ export function withContent() {
     const logger = createLogger('withContent');
     type ParentPortalStoreLike = {
         currentPlaylist?: () => {
+            id?: string;
             password: string;
             serverUrl: string;
             username: string;
@@ -151,6 +155,7 @@ export function withContent() {
         playlistId?: () => string | null;
         portalStatus?: () => PortalStatusType;
         checkPortalStatus?: () => Promise<PortalStatusType>;
+        selectedContentType?: () => ContentType | undefined;
     };
 
     return signalStoreFeature(
@@ -208,9 +213,87 @@ export function withContent() {
         withMethods((store) => {
             const dataSource = inject(XTREAM_DATA_SOURCE);
             const databaseService = inject(DatabaseService);
+            const pendingRestoreService = inject(XtreamPendingRestoreService);
             const xtreamApiService = inject(XtreamApiService);
             const importTypes: ContentType[] = ['live', 'vod', 'series'];
             let activeInitializationPromise: Promise<void> | null = null;
+            let cachedHydrationGeneration = 0;
+            const activeCachedHydrationPromises = new Map<
+                string,
+                Promise<void>
+            >();
+
+            const getCachedHydrationKey = (
+                playlistId: string,
+                scope?: XtreamCachedContentScope | null
+            ): string => `${playlistId}:${scope ?? 'all'}`;
+
+            const toDbCategoryType = (type: ContentType): DbCategoryType => {
+                switch (type) {
+                    case 'live':
+                        return 'live';
+                    case 'vod':
+                        return 'movies';
+                    case 'series':
+                        return 'series';
+                }
+            };
+
+            const toCategoryType = (
+                type: ContentType
+            ): 'live' | 'vod' | 'series' => type;
+
+            const toStreamType = (
+                type: ContentType
+            ): 'live' | 'movie' | 'series' => {
+                return type === 'vod' ? 'movie' : type;
+            };
+
+            const getTypesForCacheScope = (
+                scope?: XtreamCachedContentScope | null
+            ): ContentType[] => {
+                switch (scope) {
+                    case 'live':
+                    case 'vod':
+                    case 'series':
+                        return [scope];
+                    case 'search':
+                    case 'recently-added':
+                    default:
+                        return importTypes;
+                }
+            };
+
+            const asCachedContent = <T>(content: unknown): T[] =>
+                content as T[];
+
+            const markContentScopeLoading = (
+                scope?: XtreamCachedContentScope | null,
+                options?: { preserveInitialized?: boolean }
+            ): void => {
+                const types = getTypesForCacheScope(scope);
+
+                patchState(store, (state) => {
+                    const nextLoadStates = {
+                        ...state.contentLoadStateByType,
+                    };
+
+                    for (const type of types) {
+                        nextLoadStates[type] = 'loading';
+                    }
+
+                    return {
+                        isLoadingCategories: true,
+                        isLoadingContent: true,
+                        isImporting: false,
+                        isContentInitialized: options?.preserveInitialized
+                            ? state.isContentInitialized
+                            : false,
+                        contentInitBlockReason: null,
+                        contentLoadStateByType: nextLoadStates,
+                    };
+                });
+            };
 
             const updateContentTypeLoadState = (
                 type: ContentType,
@@ -222,6 +305,18 @@ export function withContent() {
                         [type]: loadState,
                     },
                 }));
+            };
+
+            const setActiveImportProgress = (
+                type: ContentType | null,
+                current = 0,
+                total = 0
+            ): void => {
+                patchState(store, {
+                    activeImportContentType: type,
+                    activeImportCurrentCount: current,
+                    activeImportTotalCount: total,
+                });
             };
 
             const resolveInitBlockReason = (
@@ -252,7 +347,8 @@ export function withContent() {
                 if (
                     store.contentInitBlockReason() === 'cancelled' ||
                     (expectedImportSessionId != null &&
-                        store.activeImportSessionId() !== expectedImportSessionId)
+                        store.activeImportSessionId() !==
+                            expectedImportSessionId)
                 ) {
                     throw createImportAbortError();
                 }
@@ -285,65 +381,239 @@ export function withContent() {
                 };
             };
 
-            const hasCompletedOfflineCache = async (
-                playlistId: string
+            const hasCachedContentForType = async (
+                playlistId: string,
+                type: ContentType
             ): Promise<boolean> => {
-                const contentTypes: Array<{
-                    categoryType: DbCategoryType;
-                    contentType: 'live' | 'movie' | 'series';
-                }> = [
-                    { categoryType: 'live', contentType: 'live' },
-                    { categoryType: 'movies', contentType: 'movie' },
-                    { categoryType: 'series', contentType: 'series' },
-                ];
+                const [hasCategories, hasContent] = await Promise.all([
+                    dataSource.hasCategories(playlistId, toDbCategoryType(type)),
+                    dataSource.hasContent(playlistId, toStreamType(type)),
+                ]);
 
-                const cacheChecks = await Promise.all(
-                    contentTypes.map(
-                        async ({ categoryType, contentType }) => {
-                            const [
-                                importStatus,
-                                hasCategories,
-                                hasContent,
-                            ] = await Promise.all([
-                                databaseService.getXtreamImportStatus(
+                return hasCategories && hasContent;
+            };
+
+            const hasCachedContentForScope = async (
+                playlistId: string,
+                scope?: XtreamCachedContentScope | null
+            ): Promise<boolean> => {
+                const types = getTypesForCacheScope(scope);
+
+                if (scope === 'search' || scope === 'recently-added' || !scope) {
+                    const checks = await Promise.all(
+                        types.map((type) =>
+                            dataSource.hasContent(playlistId, toStreamType(type))
+                        )
+                    );
+                    return checks.some(Boolean);
+                }
+
+                return hasCachedContentForType(playlistId, scope);
+            };
+
+            const isCurrentCachedHydrationContext = (
+                playlistId: string,
+                generation: number
+            ): boolean => {
+                if (cachedHydrationGeneration !== generation) {
+                    return false;
+                }
+
+                const storeAny = getPortalStore();
+                const currentPlaylist = storeAny.currentPlaylist?.();
+                const currentPlaylistId = storeAny.playlistId?.();
+
+                return (
+                    currentPlaylistId === playlistId &&
+                    (!currentPlaylist?.id || currentPlaylist.id === playlistId)
+                );
+            };
+
+            const isCachedContentScopeReady = (
+                scope?: XtreamCachedContentScope | null
+            ): boolean => {
+                const types = getTypesForCacheScope(scope);
+                const loadStates = store.contentLoadStateByType();
+                return types.every((type) => loadStates[type] === 'ready');
+            };
+
+            const executeCachedContentHydration = async (
+                playlistId: string,
+                scope: XtreamCachedContentScope | null | undefined,
+                generation: number
+            ): Promise<void> => {
+                const types = getTypesForCacheScope(scope);
+                markContentScopeLoading(scope, {
+                    preserveInitialized: store.isContentInitialized(),
+                });
+
+                let cachedEntries: Array<{
+                    type: ContentType;
+                    categories: Awaited<
+                        ReturnType<typeof dataSource.getCachedCategories>
+                    >;
+                    content: Awaited<
+                        ReturnType<typeof dataSource.getCachedContent>
+                    >;
+                }>;
+
+                try {
+                    cachedEntries = await Promise.all(
+                        types.map(async (type) => {
+                            const [categories, content] = await Promise.all([
+                                dataSource.getCachedCategories(
                                     playlistId,
-                                    contentType
+                                    toCategoryType(type)
                                 ),
-                                dataSource.hasCategories(
+                                dataSource.getCachedContent(
                                     playlistId,
-                                    categoryType
+                                    toStreamType(type)
                                 ),
-                                dataSource.hasContent(playlistId, contentType),
                             ]);
 
-                            return (
-                                importStatus === 'completed' &&
-                                hasCategories &&
-                                hasContent
-                            );
-                        }
-                    )
-                );
+                            return { type, categories, content };
+                        })
+                    );
+                } catch (error) {
+                    if (
+                        !isCurrentCachedHydrationContext(
+                            playlistId,
+                            generation
+                        )
+                    ) {
+                        return;
+                    }
 
-                return cacheChecks.every(Boolean);
+                    const errorBlockReason: XtreamContentInitBlockReason =
+                        'error';
+                    patchState(store, (state) => {
+                        const nextLoadStates = {
+                            ...state.contentLoadStateByType,
+                        };
+
+                        for (const type of types) {
+                            nextLoadStates[type] = 'error';
+                        }
+
+                        return {
+                            isLoadingCategories: false,
+                            isLoadingContent: false,
+                            contentInitBlockReason: errorBlockReason,
+                            contentLoadStateByType: nextLoadStates,
+                        };
+                    });
+                    throw error;
+                }
+
+                if (
+                    !isCurrentCachedHydrationContext(playlistId, generation)
+                ) {
+                    return;
+                }
+
+                patchState(store, (state) => {
+                    const nextLoadStates = {
+                        ...state.contentLoadStateByType,
+                    };
+                    const updates: Partial<ContentState> = {
+                        isLoadingCategories: false,
+                        isLoadingContent: false,
+                        isImporting: false,
+                        isContentInitialized: true,
+                        contentInitBlockReason: null,
+                    };
+
+                    for (const entry of cachedEntries) {
+                        nextLoadStates[entry.type] = 'ready';
+
+                        switch (entry.type) {
+                            case 'live':
+                                updates.liveCategories = entry.categories;
+                                updates.liveStreams =
+                                    asCachedContent<XtreamLiveStream>(
+                                        entry.content
+                                    );
+                                break;
+                            case 'vod':
+                                updates.vodCategories = entry.categories;
+                                updates.vodStreams =
+                                    asCachedContent<XtreamVodStream>(
+                                        entry.content
+                                    );
+                                break;
+                            case 'series':
+                                updates.serialCategories = entry.categories;
+                                updates.serialStreams =
+                                    asCachedContent<XtreamSerieItem>(
+                                        entry.content
+                                    );
+                                break;
+                        }
+                    }
+
+                    updates.contentLoadStateByType = nextLoadStates;
+                    return updates;
+                });
+            };
+
+            const hydrateCachedContentForScope = async (
+                scope?: XtreamCachedContentScope | null
+            ): Promise<void> => {
+                const ctx = getCredentialsFromStore();
+                if (!ctx) return;
+
+                if (isCachedContentScopeReady(scope)) {
+                    patchState(store, {
+                        isLoadingCategories: false,
+                        isLoadingContent: false,
+                        isContentInitialized: true,
+                        contentInitBlockReason: null,
+                    });
+                    return;
+                }
+
+                const requestKey = getCachedHydrationKey(
+                    ctx.playlistId,
+                    scope
+                );
+                const inFlightRequest =
+                    activeCachedHydrationPromises.get(requestKey);
+
+                if (inFlightRequest) {
+                    return inFlightRequest;
+                }
+
+                const generation = cachedHydrationGeneration;
+                const request = executeCachedContentHydration(
+                    ctx.playlistId,
+                    scope,
+                    generation
+                ).finally(() => {
+                    if (
+                        activeCachedHydrationPromises.get(requestKey) ===
+                        request
+                    ) {
+                        activeCachedHydrationPromises.delete(requestKey);
+                    }
+                });
+
+                activeCachedHydrationPromises.set(requestKey, request);
+                return request;
             };
 
             const trackImportEvent = (event: DbOperationEvent): void => {
                 const operationId = event.operationId;
 
-                    if (
-                        store.contentInitBlockReason() === 'cancelled' &&
-                        event.status !== 'cancelled' &&
-                        event.status !== 'error' &&
-                        event.status !== 'completed'
-                    ) {
-                        return;
-                    }
+                if (
+                    store.contentInitBlockReason() === 'cancelled' &&
+                    event.status !== 'cancelled' &&
+                    event.status !== 'error' &&
+                    event.status !== 'completed'
+                ) {
+                    return;
+                }
 
-                    if (
-                        event.status === 'started' ||
-                        event.status === 'progress'
-                    ) {
+                if (event.status === 'started' || event.status === 'progress') {
                     patchState(store, (state) => ({
                         isImporting: true,
                         importPhase: event.phase ?? state.importPhase,
@@ -364,22 +634,33 @@ export function withContent() {
                               : state.activeImportOperationIds.includes(
                                       operationId
                                   )
-                                ? state.activeImportOperationIds
+                                    ? state.activeImportOperationIds
                                 : [
                                       ...state.activeImportOperationIds,
                                       operationId,
                                   ],
                     isCancellingImport: state.isCancellingImport,
                 }));
+
+                if (
+                    event.operation === 'save-content' &&
+                    store.activeImportContentType()
+                ) {
+                    patchState(store, (state) => ({
+                        activeImportCurrentCount:
+                            event.current ?? state.activeImportCurrentCount,
+                        activeImportTotalCount:
+                            event.total ?? state.activeImportTotalCount,
+                    }));
+                }
             };
 
             const registerImportOperation = (operationId: string): void => {
                 patchState(store, (state) => ({
-                    activeImportOperationIds: state.activeImportOperationIds.includes(
-                        operationId
-                    )
-                        ? state.activeImportOperationIds
-                        : [...state.activeImportOperationIds, operationId],
+                    activeImportOperationIds:
+                        state.activeImportOperationIds.includes(operationId)
+                            ? state.activeImportOperationIds
+                            : [...state.activeImportOperationIds, operationId],
                 }));
             };
 
@@ -484,6 +765,9 @@ export function withContent() {
                     importCount: 0,
                     importPhase: null,
                     itemsToImport: 0,
+                    activeImportContentType: null,
+                    activeImportCurrentCount: 0,
+                    activeImportTotalCount: 0,
                     activeImportSessionId: importSessionId,
                     activeImportOperationIds: [],
                     contentLoadStateByType: {
@@ -511,15 +795,12 @@ export function withContent() {
                     throwIfImportCancelled(importSessionId);
 
                     // Restore user data if needed
-                    const restoreKey = `xtream-restore-${ctx.playlistId}`;
-                    const restoreData = localStorage.getItem(restoreKey);
+                    const restoreData = pendingRestoreService.get(
+                        ctx.playlistId
+                    );
                     if (restoreData) {
                         try {
                             throwIfImportCancelled(importSessionId);
-                            const {
-                                favoritedXtreamIds,
-                                recentlyViewedXtreamIds,
-                            } = JSON.parse(restoreData);
                             const restoreOperationId =
                                 databaseService.createOperationId(
                                     'xtream-restore'
@@ -530,21 +811,17 @@ export function withContent() {
                             });
                             await dataSource.restoreUserData(
                                 ctx.playlistId,
-                                favoritedXtreamIds,
-                                recentlyViewedXtreamIds,
+                                restoreData,
                                 {
                                     onEvent: trackImportEvent,
                                     operationId: restoreOperationId,
                                 }
                             );
                             throwIfImportCancelled(importSessionId);
-                            localStorage.removeItem(restoreKey);
+                            pendingRestoreService.clear(ctx.playlistId);
                         } catch (err) {
                             if (!isDbAbortError(err)) {
-                                logger.error(
-                                    'Error restoring user data',
-                                    err
-                                );
+                                logger.error('Error restoring user data', err);
                             }
                         }
                     }
@@ -592,6 +869,9 @@ export function withContent() {
                         importCount: 0,
                         importPhase: null,
                         itemsToImport: 0,
+                        activeImportContentType: null,
+                        activeImportCurrentCount: 0,
+                        activeImportTotalCount: 0,
                         activeImportSessionId: null,
                         activeImportOperationIds: [],
                     });
@@ -633,9 +913,9 @@ export function withContent() {
                 /**
                  * Fetch all categories in parallel
                  */
-                async fetchAllCategories(
-                    options?: { sessionId?: string }
-                ): Promise<void> {
+                async fetchAllCategories(options?: {
+                    sessionId?: string;
+                }): Promise<void> {
                     const ctx = getCredentialsFromStore();
                     if (!ctx) return;
 
@@ -702,13 +982,11 @@ export function withContent() {
                 /**
                  * Fetch all content/streams with shared progress tracking
                  */
-                async fetchAllContent(
-                    options?: {
-                        importSessionId?: string;
-                        sessionId?: string;
-                        completedTypes?: Set<ContentType>;
-                    }
-                ): Promise<void> {
+                async fetchAllContent(options?: {
+                    importSessionId?: string;
+                    sessionId?: string;
+                    completedTypes?: Set<ContentType>;
+                }): Promise<void> {
                     const ctx = getCredentialsFromStore();
                     if (!ctx) return;
 
@@ -720,19 +998,28 @@ export function withContent() {
 
                     const onTotal = (count: number) => {
                         totalItems += count;
-                        patchState(store, { itemsToImport: totalItems });
+                        patchState(store, {
+                            itemsToImport: totalItems,
+                            activeImportTotalCount: count,
+                        });
                     };
 
                     const onProgress = (count: number) => {
                         importedItems += count;
-                        patchState(store, { importCount: importedItems });
+                        patchState(store, (state) => ({
+                            importCount: importedItems,
+                            activeImportCurrentCount:
+                                state.activeImportCurrentCount + count,
+                        }));
                     };
 
                     try {
                         throwIfImportCancelled(options?.importSessionId);
-                        const liveOperationId = databaseService.createOperationId(
-                            'db-save-content'
-                        );
+                        setActiveImportProgress('live');
+                        const liveOperationId =
+                            databaseService.createOperationId(
+                                'db-save-content'
+                            );
                         registerImportOperation(liveOperationId);
 
                         const live = (await dataSource.getContent(
@@ -753,7 +1040,11 @@ export function withContent() {
                             }
                         )) as XtreamLiveStream[];
                         throwIfImportCancelled(options?.importSessionId);
-                        await setImportStatus(ctx.playlistId, 'live', 'completed');
+                        await setImportStatus(
+                            ctx.playlistId,
+                            'live',
+                            'completed'
+                        );
                         options?.completedTypes?.add('live');
                         patchState(store, {
                             liveStreams: live,
@@ -761,9 +1052,11 @@ export function withContent() {
                         updateContentTypeLoadState('live', 'ready');
 
                         throwIfImportCancelled(options?.importSessionId);
-                        const vodOperationId = databaseService.createOperationId(
-                            'db-save-content'
-                        );
+                        setActiveImportProgress('vod');
+                        const vodOperationId =
+                            databaseService.createOperationId(
+                                'db-save-content'
+                            );
                         registerImportOperation(vodOperationId);
                         const vod = (await dataSource.getContent(
                             ctx.playlistId,
@@ -783,7 +1076,11 @@ export function withContent() {
                             }
                         )) as XtreamVodStream[];
                         throwIfImportCancelled(options?.importSessionId);
-                        await setImportStatus(ctx.playlistId, 'vod', 'completed');
+                        await setImportStatus(
+                            ctx.playlistId,
+                            'vod',
+                            'completed'
+                        );
                         options?.completedTypes?.add('vod');
                         patchState(store, {
                             vodStreams: vod,
@@ -791,6 +1088,7 @@ export function withContent() {
                         updateContentTypeLoadState('vod', 'ready');
 
                         throwIfImportCancelled(options?.importSessionId);
+                        setActiveImportProgress('series');
                         const seriesOperationId =
                             databaseService.createOperationId(
                                 'db-save-content'
@@ -814,7 +1112,11 @@ export function withContent() {
                             }
                         )) as XtreamSerieItem[];
                         throwIfImportCancelled(options?.importSessionId);
-                        await setImportStatus(ctx.playlistId, 'series', 'completed');
+                        await setImportStatus(
+                            ctx.playlistId,
+                            'series',
+                            'completed'
+                        );
                         options?.completedTypes?.add('series');
                         patchState(store, {
                             serialStreams: series,
@@ -837,13 +1139,33 @@ export function withContent() {
                     await runContentInitialization();
                 },
 
-                async hasUsableOfflineCache(): Promise<boolean> {
+                async hasUsableOfflineCache(
+                    scope?: XtreamCachedContentScope | null
+                ): Promise<boolean> {
                     const ctx = getCredentialsFromStore();
                     if (!ctx) {
                         return false;
                     }
 
-                    return hasCompletedOfflineCache(ctx.playlistId);
+                    return hasCachedContentForScope(ctx.playlistId, scope);
+                },
+
+                prepareContentLoading(
+                    scope?: XtreamCachedContentScope | null
+                ): void {
+                    markContentScopeLoading(scope);
+                },
+
+                isCachedContentScopeReady(
+                    scope?: XtreamCachedContentScope | null
+                ): boolean {
+                    return isCachedContentScopeReady(scope);
+                },
+
+                async hydrateCachedContent(
+                    scope?: XtreamCachedContentScope | null
+                ): Promise<void> {
+                    await hydrateCachedContentForScope(scope);
                 },
 
                 async retryContentInitialization(): Promise<void> {
@@ -852,8 +1174,25 @@ export function withContent() {
                         getPortalStore().portalStatus?.() ??
                         'unavailable';
                     const blockReason = resolveInitBlockReason(portalStatus);
+                    const ctx = getCredentialsFromStore();
+                    const cacheScope =
+                        getPortalStore().selectedContentType?.() ?? null;
 
                     if (blockReason) {
+                        if (
+                            ctx &&
+                            (await hasCachedContentForScope(
+                                ctx.playlistId,
+                                cacheScope
+                            ))
+                        ) {
+                            clearCancelledPlaylistInitializationLock(
+                                ctx.playlistId
+                            );
+                            await hydrateCachedContentForScope(cacheScope);
+                            return;
+                        }
+
                         patchState(store, {
                             contentInitBlockReason: blockReason,
                         });
@@ -864,7 +1203,6 @@ export function withContent() {
                         contentInitBlockReason: null,
                         isContentInitialized: false,
                     });
-                    const ctx = getCredentialsFromStore();
                     if (ctx) {
                         clearCancelledPlaylistInitializationLock(
                             ctx.playlistId
@@ -886,13 +1224,14 @@ export function withContent() {
                     patchState(store, {
                         isCancellingImport: true,
                         contentInitBlockReason: 'cancelled',
+                        activeImportContentType: null,
+                        activeImportCurrentCount: 0,
+                        activeImportTotalCount: 0,
                         activeImportSessionId: null,
                     });
                     const ctx = getCredentialsFromStore();
                     if (ctx) {
-                        setCancelledPlaylistInitializationLock(
-                            ctx.playlistId
-                        );
+                        setCancelledPlaylistInitializationLock(ctx.playlistId);
                     }
 
                     await xtreamApiService.cancelSession(activeImportSessionId);
@@ -957,6 +1296,8 @@ export function withContent() {
                  * Reset content state
                  */
                 resetContent(): void {
+                    cachedHydrationGeneration += 1;
+                    activeCachedHydrationPromises.clear();
                     patchState(store, initialContentState);
                 },
             };

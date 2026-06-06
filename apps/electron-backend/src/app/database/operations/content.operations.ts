@@ -1,5 +1,9 @@
 import { and, asc, desc, eq, inArray, or, sql } from 'drizzle-orm';
-import * as schema from 'database-schema';
+import * as schema from '@iptvnator/shared/database/schema';
+import {
+    getXtreamRecentlyAddedMaxEpochSeconds,
+    toXtreamRecentlyAddedEpochSeconds,
+} from '@iptvnator/shared/interfaces';
 import type { AppDatabase } from '../database.types';
 import {
     checkpointOperation,
@@ -107,17 +111,41 @@ export async function getContent(
         : baseQuery.orderBy(desc(schema.content.added));
 }
 
+export type RecentlyAddedPlaylistType =
+    | 'xtream'
+    | 'stalker'
+    | 'm3u-file'
+    | 'm3u-text'
+    | 'm3u-url';
+
 export async function getGlobalRecentlyAdded(
     db: AppDatabase,
     kind: GlobalRecentlyAddedKind = 'all',
-    limit = 200
+    limit = 200,
+    playlistType?: RecentlyAddedPlaylistType
 ) {
     const contentTypes = getRecentlyAddedContentTypes(kind);
     const normalizedLimit = Number.isFinite(limit)
         ? Math.min(Math.max(Math.trunc(limit), 1), 200)
         : 200;
-    const addedOrder = sql<number>`CAST(${schema.content.added} AS INTEGER)`;
 
+    const whereConditions = [
+        inArray(schema.content.type, contentTypes),
+        eq(schema.categories.hidden, false),
+        sql`${schema.content.added} <> ''`,
+        sql`${schema.content.added} <= ${getXtreamRecentlyAddedMaxEpochSeconds()}`,
+    ];
+
+    if (playlistType) {
+        whereConditions.push(eq(schema.playlists.type, playlistType));
+    }
+
+    // Sort by `added` directly. Xtream import and DB startup migrations
+    // normalize recently-added epochs to 10-digit seconds strings, so
+    // lexicographic sort is equivalent to numeric sort. Wrapping the column in
+    // CAST(... AS INTEGER) blocks SQLite from using idx_content_type_added and
+    // forces a full table scan + sort on the entire content table (often 100k+
+    // rows) on every dashboard load.
     return db
         .select({
             ...selectContentFields(),
@@ -134,14 +162,8 @@ export async function getGlobalRecentlyAdded(
             schema.playlists,
             eq(schema.categories.playlistId, schema.playlists.id)
         )
-        .where(
-            and(
-                inArray(schema.content.type, contentTypes),
-                eq(schema.categories.hidden, false),
-                sql`${schema.content.added} <> ''`
-            )
-        )
-        .orderBy(desc(addedOrder))
+        .where(and(...whereConditions))
+        .orderBy(desc(schema.content.added))
         .limit(normalizedLimit);
 }
 
@@ -166,16 +188,16 @@ type XtreamContentSource = Record<string, unknown> & {
     last_modified?: string;
     added?: string;
     stream_icon?: string;
-        poster?: string;
-        cover?: string;
-        name?: string;
-        title?: string;
-        epg_channel_id?: string;
-        tv_archive?: string | number;
-        tv_archive_duration?: string | number;
-        direct_source?: string;
-        series_id?: string | number;
-        stream_id?: string | number;
+    poster?: string;
+    cover?: string;
+    name?: string;
+    title?: string;
+    epg_channel_id?: string;
+    tv_archive?: string | number;
+    tv_archive_duration?: string | number;
+    direct_source?: string;
+    series_id?: string | number;
+    stream_id?: string | number;
 };
 
 function toXtreamContentValue(
@@ -207,10 +229,11 @@ function toXtreamContentValue(
         categoryId,
         title,
         rating: String(source.rating || source.rating_imdb || ''),
-        added:
+        added: toXtreamRecentlyAddedEpochSeconds(
             type === 'series'
-                ? String(source.last_modified || '')
-                : String(source.added || ''),
+                ? source.last_modified || source.added
+                : source.added || source.last_modified
+        ),
         posterUrl: String(
             source.stream_icon || source.poster || source.cover || ''
         ),
@@ -283,10 +306,9 @@ export async function saveContent(
             )
         );
 
-    const categoryMap = new Map(categories.map((category) => [
-        category.xtreamId,
-        category.id,
-    ]));
+    const categoryMap = new Map(
+        categories.map((category) => [category.xtreamId, category.id])
+    );
 
     const values = streams
         .map((stream) => toXtreamContentValue(stream, type, categoryMap))
@@ -299,16 +321,18 @@ export async function saveContent(
     for (let index = 0; index < values.length; index += chunkSize) {
         await checkpointOperation(control);
         const chunk = values.slice(index, index + chunkSize);
-        await db
-            .insert(schema.content)
-            .values(chunk)
-            .onConflictDoNothing({
-                target: [
-                    schema.content.categoryId,
-                    schema.content.type,
-                    schema.content.xtreamId,
-                ],
-            });
+        await db.transaction((tx) => {
+            tx.insert(schema.content)
+                .values(chunk)
+                .onConflictDoNothing({
+                    target: [
+                        schema.content.categoryId,
+                        schema.content.type,
+                        schema.content.xtreamId,
+                    ],
+                })
+                .run();
+        });
         totalInserted += chunk.length;
         await reportOperationProgress(control, {
             phase: 'saving-content',
@@ -353,13 +377,19 @@ export async function clearXtreamImportCache(
         contentRows.map((row) => row.id),
         100
     )) {
-        await db.delete(schema.content).where(inArray(schema.content.id, chunk));
+        await db.transaction((tx) => {
+            tx.delete(schema.content)
+                .where(inArray(schema.content.id, chunk))
+                .run();
+        });
     }
 
     for (const chunk of chunkValues(categoryIds, 100)) {
-        await db
-            .delete(schema.categories)
-            .where(inArray(schema.categories.id, chunk));
+        await db.transaction((tx) => {
+            tx.delete(schema.categories)
+                .where(inArray(schema.categories.id, chunk))
+                .run();
+        });
     }
 
     return { success: true };
@@ -368,8 +398,18 @@ export async function clearXtreamImportCache(
 export async function getContentByXtreamId(
     db: AppDatabase,
     xtreamId: number,
-    playlistId: string
+    playlistId: string,
+    contentType?: 'live' | 'movie' | 'series'
 ) {
+    const conditions = [
+        eq(schema.content.xtreamId, xtreamId),
+        eq(schema.categories.playlistId, playlistId),
+    ];
+
+    if (contentType) {
+        conditions.push(eq(schema.content.type, contentType));
+    }
+
     const result = await db
         .select(selectContentFields())
         .from(schema.content)
@@ -377,12 +417,7 @@ export async function getContentByXtreamId(
             schema.categories,
             eq(schema.content.categoryId, schema.categories.id)
         )
-        .where(
-            and(
-                eq(schema.content.xtreamId, xtreamId),
-                eq(schema.categories.playlistId, playlistId)
-            )
-        )
+        .where(and(...conditions))
         .limit(1);
 
     return result[0] || null;
@@ -407,7 +442,10 @@ export async function searchContent(
 
     const conditions = [
         eq(schema.categories.playlistId, playlistId),
-        inArray(schema.content.type, types as Array<'live' | 'movie' | 'series'>),
+        inArray(
+            schema.content.type,
+            types as Array<'live' | 'movie' | 'series'>
+        ),
         or(...likeConditions),
     ];
 
@@ -449,7 +487,10 @@ export async function globalSearch(
     );
 
     const conditions = [
-        inArray(schema.content.type, types as Array<'live' | 'movie' | 'series'>),
+        inArray(
+            schema.content.type,
+            types as Array<'live' | 'movie' | 'series'>
+        ),
         or(...likeConditions),
     ];
 

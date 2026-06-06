@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import * as schema from 'database-schema';
+import * as schema from '@iptvnator/shared/database/schema';
 import type { AppDatabase } from '../database.types';
 
 type XtreamCategoryInput = {
@@ -7,7 +7,9 @@ type XtreamCategoryInput = {
     category_id: string | number;
 };
 
-function normalizeXtreamCategoryId(rawCategoryId: string | number): number | null {
+function normalizeXtreamCategoryId(
+    rawCategoryId: string | number
+): number | null {
     const xtreamId = Number.parseInt(String(rawCategoryId), 10);
 
     return Number.isNaN(xtreamId) ? null : xtreamId;
@@ -36,6 +38,10 @@ export async function getCategories(
     playlistId: string,
     type: 'live' | 'movies' | 'series'
 ) {
+    // Xtream categories are inserted once in provider order and existing
+    // xtream IDs are preserved, so row id order represents server order.
+    // If partial category re-inserts are added later, persist a provider
+    // sort index instead of relying on the insertion id.
     return db
         .select()
         .from(schema.categories)
@@ -46,7 +52,7 @@ export async function getCategories(
                 eq(schema.categories.hidden, false)
             )
         )
-        .orderBy(sql`name COLLATE NOCASE`);
+        .orderBy(schema.categories.id);
 }
 
 export async function saveCategories(

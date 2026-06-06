@@ -245,8 +245,8 @@ export function withSelection() {
             const selectedTypeContentReady = computed(
                 () => selectedTypeContentState() === 'ready'
             );
-            const selectedTypeCountsReady = computed(
-                () => selectedTypeContentReady()
+            const selectedTypeCountsReady = computed(() =>
+                selectedTypeContentReady()
             );
 
             // ---------------------------------------------------------------------------
@@ -268,18 +268,27 @@ export function withSelection() {
                           ? storeAny.vodStreams?.() || []
                           : storeAny.serialStreams?.() || [];
 
-                if (!categoryId) {
-                    return sortedContent();
+                if (categoryType === 'vod' || categoryType === 'series') {
+                    let filtered = categoryId
+                        ? content.filter(
+                              (item) => Number(item.category_id) === categoryId
+                          )
+                        : sortedContent();
+
+                    filtered = filterBySearchTerm(filtered, searchTerm);
+                    return categoryId || searchTerm
+                        ? sortByMode(filtered, sortMode, categoryType)
+                        : filtered;
                 }
 
-                let filtered = content.filter(
+                if (!categoryId) {
+                    return filterBySearchTerm(sortedContent(), searchTerm);
+                }
+
+                const filtered = content.filter(
                     (item) => Number(item.category_id) === categoryId
                 );
-                if (categoryType === 'vod' || categoryType === 'series') {
-                    filtered = filterBySearchTerm(filtered, searchTerm);
-                    filtered = sortByMode(filtered, sortMode, categoryType);
-                }
-                return filtered;
+                return filterBySearchTerm(filtered, searchTerm);
             });
 
             return {
@@ -502,6 +511,10 @@ export function withSelection() {
              * Set selected category search term
              */
             setCategorySearchTerm(term: string): void {
+                if (store.categorySearchTerm() === term) {
+                    return;
+                }
+
                 patchState(store, {
                     categorySearchTerm: term,
                     page: 0,

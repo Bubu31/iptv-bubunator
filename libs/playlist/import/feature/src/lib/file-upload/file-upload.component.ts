@@ -1,9 +1,11 @@
-import { Component, EventEmitter, inject, Output } from '@angular/core';
+import { Component, EventEmitter, Output, inject, signal } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
-import { Store } from '@ngrx/store';
 import { TranslatePipe } from '@ngx-translate/core';
-import { PlaylistActions } from 'm3u-state';
+import { PlaylistFileImportService } from '@iptvnator/playlist/shared/util';
 import { DragDropFileUploadDirective } from './drag-drop-file-upload.directive';
+
+const MB = 1024 * 1024;
+const KB = 1024;
 
 @Component({
     imports: [DragDropFileUploadDirective, MatIconModule, TranslatePipe],
@@ -12,69 +14,103 @@ import { DragDropFileUploadDirective } from './drag-drop-file-upload.directive';
     styleUrls: ['./file-upload.component.scss'],
 })
 export class FileUploadComponent {
-    @Output() fileSelected = new EventEmitter<{
-        uploadEvent: Event;
-        file: File;
-    }>();
+    private readonly importService = inject(PlaylistFileImportService);
+
+    @Output() imported = new EventEmitter<{ title: string }>();
     @Output() fileRejected = new EventEmitter<string>();
-    @Output() addClicked = new EventEmitter<void>();
     @Output() closeDialog = new EventEmitter<void>();
 
-    private readonly store = inject(Store);
+    readonly selectedFile = signal<File | null>(null);
+    readonly isDragging = signal(false);
+    readonly isImporting = signal(false);
 
-    private isDesktop = !!window.electron;
-
-    allowedContentTypes = [
-        'application/mpegurl',
-        'application/x-mpegurl',
-        'application/octet-stream',
-        'application/vnd.apple.mpegurl',
-        'application/vnd.apple.mpegurl.audio',
-        'audio/x-mpegurl',
-        'audio/mpegurl',
-    ];
-
-    async openDialog(fileField: HTMLInputElement) {
-        if (this.isDesktop) {
-            window.electron
-                .openPlaylistFromFile()
-                .then((playlistObject) => {
-                    if (playlistObject) {
-                        console.log(
-                            'Received playlist from Electron:',
-                            playlistObject
-                        );
-                        this.store.dispatch(
-                            PlaylistActions.addPlaylist({ playlist: playlistObject })
-                        );
-                    } else {
-                        // User canceled the dialog
-                        console.log('File selection was canceled.');
-                    }
-                })
-                .catch((error) => {
-                    console.error('Error opening file:', error);
-                });
-            this.closeDialog.emit();
-        } else {
-            fileField.click();
-        }
-    }
-
-    upload(fileList: FileList) {
-        if (this.isDesktop) return;
-
-        if (!this.allowedContentTypes.includes(fileList[0].type)) {
-            this.fileRejected.emit(fileList[0].name);
+    async openPicker(input: HTMLInputElement): Promise<void> {
+        if (this.importService.canImportFromNativeDialog()) {
+            await this.importFromNativeDialog();
             return;
         }
-        const fileReader = new FileReader();
-        fileReader.onload = (uploadEvent) =>
-            this.fileSelected.emit({
-                uploadEvent,
-                file: fileList[0],
+
+        input.value = '';
+        input.click();
+    }
+
+    onDragStateChange(isDragging: boolean): void {
+        this.isDragging.set(isDragging);
+    }
+
+    onFilesDropped(files: FileList): void {
+        this.setFile(files[0]);
+    }
+
+    onPicked(input: HTMLInputElement): void {
+        const file = input.files?.[0] as (File & { path?: string }) | undefined;
+        const pathOverride = input.dataset['filePathOverride'];
+
+        if (file && !file.path && pathOverride) {
+            Object.defineProperty(file, 'path', {
+                configurable: true,
+                value: pathOverride,
             });
-        fileReader.readAsText(fileList[0]);
-        this.addClicked.emit();
+        }
+
+        if (file) {
+            this.setFile(file);
+        }
+
+        delete input.dataset['filePathOverride'];
+        input.value = '';
+    }
+
+    clearSelection(): void {
+        this.selectedFile.set(null);
+    }
+
+    async confirm(): Promise<void> {
+        const file = this.selectedFile();
+        if (!file || this.isImporting()) return;
+
+        this.isImporting.set(true);
+        const result = await this.importService.importFile(file);
+        this.isImporting.set(false);
+
+        if (result.ok === true) {
+            this.imported.emit({ title: result.title });
+            return;
+        }
+
+        this.selectedFile.set(null);
+        this.fileRejected.emit(file.name);
+    }
+
+    formatSize(bytes: number): string {
+        if (bytes < KB) return `${bytes} B`;
+        if (bytes < MB) return `${(bytes / KB).toFixed(1)} KB`;
+        return `${(bytes / MB).toFixed(1)} MB`;
+    }
+
+    private setFile(file: File | undefined): void {
+        if (!file) return;
+        if (!this.importService.isSupportedFile(file)) {
+            this.fileRejected.emit(file.name);
+            return;
+        }
+        this.selectedFile.set(file);
+    }
+
+    private async importFromNativeDialog(): Promise<void> {
+        if (this.isImporting()) return;
+
+        this.isImporting.set(true);
+        const result = await this.importService.importFromNativeDialog();
+        this.isImporting.set(false);
+
+        if (result.ok === true) {
+            this.imported.emit({ title: result.title });
+            return;
+        }
+
+        if (result.reason !== 'cancelled') {
+            this.fileRejected.emit('selected playlist');
+        }
     }
 }

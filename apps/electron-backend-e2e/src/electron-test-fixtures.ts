@@ -23,6 +23,10 @@ export const electronMainPath = join(
     workspaceRoot,
     'dist/apps/electron-backend/main.js'
 );
+export const packagedRendererIndexPath = join(
+    workspaceRoot,
+    'dist/apps/web/index.html'
+);
 export const m3uFixturePath = join(
     workspaceRoot,
     'apps/web-e2e/src/fixtures/test.m3u'
@@ -104,7 +108,8 @@ export type LaunchedElectronApp = {
 };
 
 export const test = base.extend<ElectronFixtures>({
-    dataDir: async ({}, use) => {
+    dataDir: async ({ browserName }, use) => {
+        void browserName;
         const dataDir = mkdtempSync(join(tmpdir(), 'iptvnator-electron-e2e-'));
 
         await use(dataDir);
@@ -124,6 +129,7 @@ export async function launchElectronApp(
             `Electron build not found at ${electronMainPath}. Run the build before executing the E2E suite.`
         );
     }
+    assertPackagedRendererBuildIsElectronSafe();
 
     const args = [electronMainPath];
 
@@ -164,6 +170,24 @@ export async function closeElectronApp(
     }
 }
 
+function assertPackagedRendererBuildIsElectronSafe(): void {
+    if (!existsSync(packagedRendererIndexPath)) {
+        throw new Error(
+            `Renderer build not found at ${packagedRendererIndexPath}. Run pnpm nx run electron-backend:build-e2e before executing the Electron E2E suite.`
+        );
+    }
+
+    const indexHtml = readFileSync(packagedRendererIndexPath, 'utf8');
+    const baseHrefMatch = indexHtml.match(/<base\s+href="([^"]*)"/i);
+    const baseHref = baseHrefMatch?.[1] ?? '<missing>';
+
+    if (baseHref !== './') {
+        throw new Error(
+            `Renderer build at ${packagedRendererIndexPath} is not file-safe for packaged Electron. Found base href ${JSON.stringify(baseHref)}. Run pnpm nx run electron-backend:build-e2e or use an Electron E2E Nx target so dist/apps/web is rebuilt with the electron-e2e configuration.`
+        );
+    }
+}
+
 async function findMainWindow(app: ElectronApplication): Promise<Page> {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 2000));
 
@@ -183,18 +207,48 @@ async function findMainWindow(app: ElectronApplication): Promise<Page> {
 async function waitForAppReady(page: Page): Promise<void> {
     await page.waitForLoadState('domcontentloaded');
     await page.waitForSelector('app-root', { timeout: 30000 });
-    await page.waitForFunction(
-        () => {
-            const appRoot = document.querySelector('app-root');
+    try {
+        await page.waitForFunction(
+            () => {
+                const appRoot = document.querySelector('app-root');
 
-            return Boolean(appRoot && appRoot.innerHTML.trim().length > 0);
-        },
-        { timeout: 30000 }
-    );
+                return Boolean(appRoot && appRoot.innerHTML.trim().length > 0);
+            },
+            { timeout: 30000 }
+        );
+    } catch (error) {
+        const diagnostics = await page.evaluate(() => ({
+            appRootLength:
+                document.querySelector('app-root')?.innerHTML.trim().length ?? 0,
+            baseHref:
+                document
+                    .querySelector('base')
+                    ?.getAttribute('href') ?? '<missing>',
+            readyState: document.readyState,
+            title: document.title,
+            url: location.href,
+        }));
+
+        const reason =
+            error instanceof Error ? error.message : 'unknown startup error';
+
+        throw new Error(
+            `Electron app did not render visible app-root within 30000ms. ${reason}. Diagnostics: ${JSON.stringify(
+                diagnostics
+            )}`
+        );
+    }
 }
 
 export async function openAddPlaylistDialog(page: Page): Promise<void> {
     await page.getByRole('button', { name: 'Add playlist' }).click();
+    await expect(page.locator('mat-dialog-container').last()).toBeVisible();
+}
+
+async function getActiveDialog(page: Page): Promise<Locator> {
+    const dialog = page.locator('mat-dialog-container').last();
+    await expect(dialog).toBeVisible();
+    return dialog;
 }
 
 export async function stubNativePlaylistFileDialog(
@@ -214,15 +268,80 @@ export async function importM3uPlaylistFromNativeDialog(
     app: LaunchedElectronApp,
     filePath: string
 ): Promise<void> {
-    await stubNativePlaylistFileDialog(app.electronApp, filePath);
     await openAddPlaylistDialog(app.mainWindow);
-    await app.mainWindow
-        .locator('mat-dialog-container mat-button-toggle[value="file"]')
-        .click();
-    await app.mainWindow.locator('mat-dialog-container .file-upload').click();
-    await app.mainWindow.waitForSelector('mat-dialog-container', {
-        state: 'detached',
+    const dialog = await getActiveDialog(app.mainWindow);
+    await clickDialogCategoryOption(dialog, /^m3u$/i);
+    await clickDialogSubtypeOption(
+        dialog,
+        /m3u\s*file|add\s+via\s+file\s+upload/i,
+        'mat-button-toggle[value="file"]'
+    );
+    const fileInput = dialog.locator('input[type="file"][name="playlist"]');
+
+    await fileInput.evaluate((element, selectedFilePath) => {
+        (element as HTMLInputElement).dataset.filePathOverride =
+            selectedFilePath;
+    }, filePath);
+    await fileInput.setInputFiles(filePath);
+    await expect(
+        dialog.getByRole('button', { name: /add playlist/i })
+    ).toBeEnabled({ timeout: 10000 });
+    await dialog.getByRole('button', { name: /add playlist/i }).click();
+    await dialog.waitFor({ state: 'detached' });
+}
+
+export async function dropM3uPlaylistOntoWorkspace(
+    page: Page,
+    filePath: string
+): Promise<void> {
+    await expect(page.locator('.workspace-shell')).toBeVisible({
+        timeout: 20000,
     });
+
+    const inputHandle = await page.evaluateHandle(() => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        document.body.append(input);
+        return input;
+    });
+    const inputElement = inputHandle.asElement();
+    if (!inputElement) {
+        await inputHandle.dispose();
+        throw new Error('Could not create temporary file input.');
+    }
+
+    await inputElement.setInputFiles(filePath);
+
+    await page.evaluate((element) => {
+        const input = element as HTMLInputElement;
+        const file = input.files?.[0];
+        if (!file) {
+            throw new Error('Temporary file input did not receive a file.');
+        }
+
+        const target = document.querySelector('.workspace-shell');
+        if (!target) {
+            throw new Error('Workspace drop target was not found.');
+        }
+
+        const dataTransfer = new DataTransfer();
+        dataTransfer.items.add(file);
+
+        for (const type of ['dragenter', 'dragover', 'drop']) {
+            target.dispatchEvent(
+                new DragEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    dataTransfer,
+                })
+            );
+        }
+
+        input.remove();
+    }, inputElement);
+    await inputHandle.dispose();
 }
 
 export async function addXtreamPortal(
@@ -242,18 +361,24 @@ export async function addXtreamPortal(
     } = options;
 
     await openAddPlaylistDialog(page);
-    const dialog = page.locator('mat-dialog-container');
-    await dialog.locator('mat-button-toggle[value="xtream"]').click();
+    const dialog = await getActiveDialog(page);
+    await clickDialogCategoryOption(
+        dialog,
+        /xtream(\s+credentials)?/i,
+        'mat-button-toggle[value="xtream"]'
+    );
 
     await setInputValue(dialog.locator('#title'), name);
     await setInputValue(dialog.locator('#serverUrl'), serverUrl);
     await setInputValue(dialog.locator('#username'), username);
     await setInputValue(dialog.locator('#password'), password);
-    const addButton = dialog.getByRole('button', { name: 'Add', exact: true });
+    const addButton = dialog
+        .getByRole('button', { name: /^(add|add playlist)$/i })
+        .last();
 
     await expect(addButton).toBeEnabled({ timeout: 10000 });
     await addButton.click();
-    await page.waitForSelector('mat-dialog-container', { state: 'detached' });
+    await dialog.waitFor({ state: 'detached' });
 }
 
 async function setInputValue(input: Locator, value: string): Promise<void> {
@@ -284,6 +409,96 @@ async function setInputValue(input: Locator, value: string): Promise<void> {
     await expect(input).toHaveValue(value);
 }
 
+/**
+ * Pick a source method on the Add Playlist dialog. Since v0.22 the dialog
+ * exposes a single flat 5-card radiogroup ("M3U URL", "M3U file", "Xtream
+ * credentials", "Stalker portal", "Raw m3u text") instead of the legacy
+ * 2-level category × subtype tabs/toggles. The helper still falls through
+ * to the old tab/button/legacy-selector lookups so we don't have to rewrite
+ * every call-site on each redesign — but the radio-based picker is the
+ * primary path now.
+ */
+async function clickDialogMethodOption(
+    dialog: Locator,
+    label: RegExp,
+    legacySelector?: string
+): Promise<void> {
+    const optionByRadio = dialog
+        .getByRole('radio', { name: label })
+        .first();
+    if ((await optionByRadio.count()) > 0) {
+        await optionByRadio.click();
+        return;
+    }
+
+    for (const tablistLabel of ['Source method', 'Playlist category', 'M3U source']) {
+        const tablist = dialog
+            .locator(`[role="tablist"][aria-label="${tablistLabel}"]`)
+            .first();
+        if ((await tablist.count()) > 0) {
+            const optionByTabRole = tablist
+                .getByRole('tab', { name: label })
+                .first();
+            if ((await optionByTabRole.count()) > 0) {
+                await optionByTabRole.click();
+                return;
+            }
+        }
+    }
+
+    const optionByGlobalTabRole = dialog
+        .getByRole('tab', { name: label })
+        .first();
+    if ((await optionByGlobalTabRole.count()) > 0) {
+        await optionByGlobalTabRole.click();
+        return;
+    }
+
+    const optionByButtonRole = dialog
+        .getByRole('button', { name: label })
+        .first();
+    if ((await optionByButtonRole.count()) > 0) {
+        await optionByButtonRole.click();
+        return;
+    }
+
+    if (!legacySelector) {
+        throw new Error(
+            `Could not find dialog option matching ${label}.`
+        );
+    }
+
+    await dialog.locator(legacySelector).click();
+}
+
+// Backwards-compat shims for the legacy two-step flow. Both helpers now route
+// through `clickDialogMethodOption` and use the patterns of the new flat
+// picker. `clickDialogCategoryOption` is a no-op for "M3U" since the new
+// picker has no parent "M3U" tile — callers immediately follow up with a
+// `clickDialogSubtypeOption` which picks the concrete M3U URL/file/text card.
+async function clickDialogCategoryOption(
+    dialog: Locator,
+    label: RegExp,
+    legacySelector?: string
+): Promise<void> {
+    // The legacy "M3U" category is now implicit — the new picker has no
+    // standalone "M3U" radio; callers always immediately specialise via
+    // `clickDialogSubtypeOption` below. Skip the click to avoid matching
+    // unrelated radios (e.g. "M3U URL" when caller wanted "M3U file").
+    if (/^\^?m3u\$?$/i.test(label.source)) {
+        return;
+    }
+    await clickDialogMethodOption(dialog, label, legacySelector);
+}
+
+async function clickDialogSubtypeOption(
+    dialog: Locator,
+    label: RegExp,
+    legacySelector?: string
+): Promise<void> {
+    await clickDialogMethodOption(dialog, label, legacySelector);
+}
+
 export async function addStalkerPortal(
     page: Page,
     options: {
@@ -299,17 +514,23 @@ export async function addStalkerPortal(
     } = options;
 
     await openAddPlaylistDialog(page);
-    const dialog = page.locator('mat-dialog-container');
-    await dialog.locator('mat-button-toggle[value="stalker"]').click();
+    const dialog = await getActiveDialog(page);
+    await clickDialogCategoryOption(
+        dialog,
+        /stalker(\s+portal)?/i,
+        'mat-button-toggle[value="stalker"]'
+    );
 
     await setInputValue(dialog.locator('input#title'), name);
     await setInputValue(dialog.locator('input#portalUrl'), portalUrl);
     await setInputValue(dialog.locator('input#macAddress'), macAddress);
-    const addButton = dialog.getByRole('button', { name: 'Add', exact: true });
+    const addButton = dialog
+        .getByRole('button', { name: /^(add|add playlist)$/i })
+        .last();
 
     await expect(addButton).toBeEnabled({ timeout: 10000 });
     await addButton.click();
-    await page.waitForSelector('mat-dialog-container', { state: 'detached' });
+    await dialog.waitFor({ state: 'detached' });
 }
 
 export async function openSettings(page: Page): Promise<void> {
@@ -367,15 +588,20 @@ export async function importM3uPlaylistFromUrl(
     playlistUrl: string
 ): Promise<void> {
     await openAddPlaylistDialog(page);
-    const dialog = page.locator('mat-dialog-container');
-    await dialog.locator('mat-button-toggle[value="url"]').click();
+    const dialog = await getActiveDialog(page);
+    await clickDialogCategoryOption(dialog, /^m3u$/i);
+    await clickDialogSubtypeOption(
+        dialog,
+        /m3u\s*url|add\s+via\s+url/i,
+        'mat-button-toggle[value="url"]'
+    );
 
     await setInputValue(
         dialog.locator('input[formcontrolname="playlistUrl"]'),
         playlistUrl
     );
     await dialog.getByRole('button', { name: /Add playlist/i }).click();
-    await page.waitForSelector('mat-dialog-container', { state: 'detached' });
+    await dialog.waitFor({ state: 'detached' });
 }
 
 export function buildM3uContent(channels: M3uTestChannel[]): string {
@@ -437,8 +663,7 @@ export function parseM3uFixture(filePath: string): M3uTestChannel[] {
                 logo: line.match(/tvg-logo="([^"]*)"/)?.[1]?.trim() ?? '',
                 name: line.split(',').at(-1)?.trim() ?? '',
                 tvgId: line.match(/tvg-id="([^"]*)"/)?.[1]?.trim() ?? '',
-                tvgName:
-                    line.match(/tvg-name="([^"]*)"/)?.[1]?.trim() ?? '',
+                tvgName: line.match(/tvg-name="([^"]*)"/)?.[1]?.trim() ?? '',
             };
             continue;
         }
@@ -508,30 +733,31 @@ export async function openWorkspaceSection(
     page: Page,
     label: string
 ): Promise<void> {
+    if (label === 'Favorites') {
+        await openPlaylistFavorites(page);
+        return;
+    }
+
+    if (label === 'Recently viewed') {
+        await openPlaylistRecent(page);
+        return;
+    }
+
     await page.getByRole('link', { name: label, exact: true }).click();
 }
 
 export async function openPlaylistFavorites(page: Page): Promise<void> {
-    await openWorkspaceSection(page, 'Favorites');
-    await expect
-        .poll(() => new URL(page.url()).pathname)
-        .toMatch(/\/favorites$/);
+    await openGlobalFavorites(page);
+    await switchUnifiedCollectionScope(page, 'This playlist');
 }
 
 export async function openPlaylistRecent(page: Page): Promise<void> {
-    await openWorkspaceSection(page, 'Recently viewed');
-    await expect
-        .poll(() => new URL(page.url()).pathname)
-        .toMatch(/\/recent$/);
+    await openGlobalRecent(page);
+    await switchUnifiedCollectionScope(page, 'This playlist');
 }
 
 export async function openGlobalFavorites(page: Page): Promise<void> {
-    await page
-        .getByRole('button', {
-            name: 'All favorites (all playlists)',
-            exact: true,
-        })
-        .click();
+    await openWorkspaceSection(page, 'Global favorites');
     await page.waitForURL(/\/workspace\/global-favorites(?:\?.*)?$/);
 }
 
@@ -539,9 +765,7 @@ export async function openGlobalRecent(page: Page): Promise<void> {
     const dialog = await openCommandPalette(page);
 
     await dialog.locator('input[type="search"]').fill('recent');
-    await dialog
-        .getByRole('button', { name: /Open recently viewed/i })
-        .click();
+    await dialog.getByRole('button', { name: /Open recently viewed/i }).click();
     await page.waitForURL(/\/workspace\/global-recent(?:\?.*)?$/);
 }
 
@@ -563,6 +787,21 @@ export async function switchUnifiedCollectionContent(
 
     await expect(toggleGroup).toBeVisible();
     await clickButtonToggleOption(toggleGroup, contentLabel);
+}
+
+export async function clearCurrentUnifiedCollection(
+    page: Page
+): Promise<void> {
+    await page
+        .getByRole('button', {
+            name: /Clear .* (favorites|recently viewed)/i,
+        })
+        .click();
+
+    const dialog = page.locator('mat-dialog-container').last();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: /^Yes$/i }).click();
+    await expect(dialog).toBeHidden();
 }
 
 async function clickButtonToggleOption(
@@ -622,6 +861,19 @@ export async function expectVisibleContentCardTitle(
         .toBe(true);
 }
 
+export async function expectPathname(
+    page: Page,
+    pattern: RegExp
+): Promise<void> {
+    await expect.poll(() => new URL(page.url()).pathname).toMatch(pattern);
+}
+
+export function playlistSwitcherTitle(page: Page): Locator {
+    return page
+        .locator('.playlist-switcher-trigger .playlist-info .name')
+        .first();
+}
+
 export function gridListCardByTitle(page: Page, title: string): Locator {
     return page.locator('.category-content-layout mat-card').filter({
         has: page.locator('.title', {
@@ -635,7 +887,9 @@ export function gridListCardByTitle(page: Page, title: string): Locator {
  * its display title. Use this instead of picking from fixture order, since the
  * grid sorts by date-desc and may paginate items off the first page.
  */
-export async function waitForFirstGridListCardTitle(page: Page): Promise<string> {
+export async function waitForFirstGridListCardTitle(
+    page: Page
+): Promise<string> {
     const card = page.locator('.category-content-layout mat-card').first();
     await expect(card).toBeVisible({ timeout: 20000 });
     return ((await card.locator('.title').textContent()) ?? '').trim();
@@ -711,24 +965,22 @@ export async function clickCategoryByNameExact(
     const category = await pickPreferredCategory(categories);
 
     await expect(category).toBeVisible();
+    await expect(category).toBeEnabled();
     await category.scrollIntoViewIfNeeded();
     const categoryId =
         (await category.getAttribute('data-category-id'))?.trim() ?? '';
     await category.click();
-    await expect
-        .poll(async () => {
-            const pathname = new URL(page.url()).pathname;
-            const isSelected =
-                (await category.getAttribute('aria-current')) === 'true';
-
-            return (
-                isSelected ||
-                (categoryId.length > 0 &&
-                    (pathname.endsWith(`/${categoryId}`) ||
-                        pathname.includes(`/${categoryId}/`)))
-            );
-        })
-        .toBe(true);
+    const selectedCategory =
+        categoryId.length > 0
+            ? page
+                  .locator(
+                      `app-workspace-context-panel .category-item[data-category-id="${categoryId}"]:visible`
+                  )
+                  .first()
+            : category;
+    await expect(selectedCategory).toHaveAttribute('aria-current', 'true', {
+        timeout: 20000,
+    });
 }
 
 export function sourceRowByTitle(page: Page, title: string): Locator {
@@ -752,7 +1004,7 @@ export async function selectSourceTypeFilter(
     page: Page,
     typeLabel: 'All' | 'M3U' | 'Xtream' | 'Stalker'
 ): Promise<void> {
-    await selectSourcesFilterOption(page, typeLabel);
+    await selectSourcesTypeFilterOption(page, typeLabel);
 }
 
 export async function selectSourceSort(
@@ -764,7 +1016,21 @@ export async function selectSourceSort(
         | 'Name (Z-A)'
         | 'Custom order'
 ): Promise<void> {
-    await selectSourcesFilterOption(page, sortLabel);
+    const sortTrigger = page.locator('app-workspace-sources .sort-trigger');
+
+    await expect(sortTrigger).toBeVisible();
+    await sortTrigger.click();
+
+    const option = page
+        .locator('.cdk-overlay-pane [role="menuitem"]')
+        .filter({
+            hasText: flexibleTextPattern(sortLabel),
+        })
+        .first();
+
+    await expect(option).toBeVisible();
+    await option.click();
+    await expect(option).toBeHidden();
 }
 
 export async function dragSourceBefore(
@@ -773,7 +1039,9 @@ export async function dragSourceBefore(
     targetTitle: string
 ): Promise<void> {
     const source = sourceRowByTitle(page, sourceTitle).locator('.drag-icon');
-    const target = sourceRowByTitle(page, targetTitle).locator('.playlist-item');
+    const target = sourceRowByTitle(page, targetTitle).locator(
+        '.playlist-item'
+    );
 
     await expect(source.first()).toBeVisible();
     await expect(target.first()).toBeVisible();
@@ -916,10 +1184,7 @@ export async function expectSourceDialogValues(
     }
 }
 
-export async function deleteSource(
-    page: Page,
-    title: string
-): Promise<void> {
+export async function deleteSource(page: Page, title: string): Promise<void> {
     const row = sourceRowByTitle(page, title).first();
 
     await expect(row).toBeVisible();
@@ -997,9 +1262,12 @@ export async function waitForXtreamWorkspaceReady(page: Page): Promise<void> {
 
 export async function expectPlaylistUpdatedToast(page: Page): Promise<void> {
     await expect(
-        page.locator('.mat-mdc-snack-bar-label').filter({
-            hasText: 'Success! The playlist was successfully updated.',
-        }).last()
+        page
+            .locator('.mat-mdc-snack-bar-label')
+            .filter({
+                hasText: 'Success! The playlist was successfully updated.',
+            })
+            .last()
     ).toBeVisible({
         timeout: 20000,
     });
@@ -1337,7 +1605,9 @@ export async function resetMockServers(
 }
 
 async function openCommandPalette(page: Page): Promise<Locator> {
-    await page.locator('app-workspace-shell-header .command-trigger').click();
+    const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
+    await page.locator('body').focus();
+    await page.keyboard.press(`${modifier}+K`);
     const dialog = page.locator(
         'mat-dialog-container app-workspace-command-palette'
     );
@@ -1350,11 +1620,13 @@ async function confirmDialog(page: Page, buttonLabel = 'Yes'): Promise<void> {
     const dialog = page.locator('mat-dialog-container');
 
     await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: buttonLabel, exact: true }).click();
+    await dialog
+        .getByRole('button', { name: buttonLabel, exact: true })
+        .click();
     await page.waitForSelector('mat-dialog-container', { state: 'detached' });
 }
 
-async function selectSourcesFilterOption(
+async function selectSourcesTypeFilterOption(
     page: Page,
     label: string
 ): Promise<void> {

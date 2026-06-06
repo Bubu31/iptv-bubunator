@@ -1,6 +1,7 @@
 import { inject, Injectable, Provider } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
 import { Router } from '@angular/router';
+import { PORTAL_SHELL_ACTIONS } from '@iptvnator/portal/shared/util';
 import {
     WORKSPACE_SHELL_ACTIONS,
     WorkspaceAccountInfoData,
@@ -17,7 +18,13 @@ export class AppWorkspaceShellActionsService implements WorkspaceShellActions {
         void import('@iptvnator/playlist/import/feature').then(
             ({ AddPlaylistDialogComponent }) => {
                 this.dialog.open(AddPlaylistDialogComponent, {
-                    width: '600px',
+                    // Width sized for the 5-card method picker plus the
+                    // selected method's form below. Matches the v0.22
+                    // mockup; falls back to viewport-clamped width on
+                    // narrow screens so the grid can collapse via the
+                    // SCSS responsive breakpoints.
+                    width: '780px',
+                    maxWidth: '92vw',
                     data: type ? { type } : {},
                 });
             }
@@ -64,6 +71,10 @@ export function provideWorkspaceShellActions(): Provider[] {
         AppWorkspaceShellActionsService,
         {
             provide: WORKSPACE_SHELL_ACTIONS,
+            useExisting: AppWorkspaceShellActionsService,
+        },
+        {
+            provide: PORTAL_SHELL_ACTIONS,
             useExisting: AppWorkspaceShellActionsService,
         },
     ];

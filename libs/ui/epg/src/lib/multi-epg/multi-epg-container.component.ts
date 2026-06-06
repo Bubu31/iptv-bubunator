@@ -25,16 +25,15 @@ import { addDays, differenceInMinutes, format, parse, subDays } from 'date-fns';
 import { Observable, Subscription, startWith } from 'rxjs';
 import {
     Channel,
+    ElectronBridgeEpgChannelWithPrograms,
     EpgChannel,
-    EpgChannelWithPrograms,
     EpgProgram,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
+import { EpgRuntimeBridgeService } from '@iptvnator/epg/data-access';
 import { EpgItemDescriptionComponent } from '../epg-list/epg-item-description/epg-item-description.component';
 import { COMPONENT_OVERLAY_REF } from './overlay-ref.token';
 
-interface MultiEpgChannel extends EpgChannelWithPrograms {
-    iconUrl?: string | null;
-}
+type MultiEpgChannel = ElectronBridgeEpgChannelWithPrograms;
 
 interface EnrichedProgram extends EpgProgram {
     startDate: Date;
@@ -54,14 +53,15 @@ interface ProgramSearchResult extends EpgProgram {
     display_name?: string | null;
 }
 
+export function isSelectedEpgDayToday(
+    selectedDay: string,
+    now: Date = new Date()
+): boolean {
+    return selectedDay === format(now, 'yyyyMMdd');
+}
+
 @Component({
-    imports: [
-        DatePipe,
-        MatButtonModule,
-        MatIcon,
-        MatTooltip,
-        TranslatePipe,
-    ],
+    imports: [DatePipe, MatButtonModule, MatIcon, MatTooltip, TranslatePipe],
     selector: 'app-multi-epg-container',
     templateUrl: './multi-epg-container.component.html',
     styleUrls: ['./multi-epg-container.component.scss'],
@@ -145,6 +145,19 @@ export class MultiEpgContainerComponent
         return (now.getHours() + now.getMinutes() / 60) * this.hourWidth();
     });
 
+    // "16:32"-style label rendered as a badge above the now-line. Recomputes
+    // on the same 60-second tick that drives `currentTimeLine` (both depend
+    // on hourWidth's update pulse from `ngOnInit`).
+    readonly currentTimeLabel = computed(() => {
+        // Subscribe to the same tick source as currentTimeLine.
+        this.hourWidth();
+        const now = new Date();
+        return `${now.getHours().toString().padStart(2, '0')}:${now
+            .getMinutes()
+            .toString()
+            .padStart(2, '0')}`;
+    });
+
     // Constants
     readonly timeHeader = Array.from({ length: 24 }, (_, i) => i);
     readonly barHeight = 50;
@@ -161,6 +174,7 @@ export class MultiEpgContainerComponent
 
     private readonly dialog = inject(MatDialog);
     private readonly overlayRef = inject<OverlayRef>(COMPONENT_OVERLAY_REF);
+    private readonly epgBridge = inject(EpgRuntimeBridgeService);
 
     ngOnInit() {
         // Update current time line every minute
@@ -228,9 +242,27 @@ export class MultiEpgContainerComponent
         return `${program.start}|${program?.title?.toString() ?? ''}`;
     }
 
+    /**
+     * Returns true when the now-line falls within this program's rendered
+     * span — used to add a `.is-now` class so the cyan border lights up
+     * every airing program at once. The template reads `currentTimeLine()`
+     * (a signal) here so the highlight refreshes on the same 60-second tick
+     * as the line itself.
+     */
+    isProgramAiringNow(program: EnrichedProgram): boolean {
+        const nowX = this.currentTimeLine();
+        if (!isSelectedEpgDayToday(this.today())) {
+            return false;
+        }
+        return (
+            nowX >= program.startPosition &&
+            nowX <= program.startPosition + program.width
+        );
+    }
+
     async requestPrograms(): Promise<void> {
-        if (!window.electron) {
-            console.warn('Multi-EPG not available: Electron not detected');
+        if (!this.epgBridge.supportsChannelBrowser) {
+            console.warn('Multi-EPG not available in this runtime');
             return;
         }
 
@@ -241,17 +273,14 @@ export class MultiEpgContainerComponent
         this.isLoading.set(true);
 
         try {
-            const response = await window.electron.getEpgChannelsByRange(
+            const response = await this.epgBridge.getChannelsByRange(
                 this.channelsLowerRange,
                 this.visibleChannels
             );
 
             if (response && Array.isArray(response)) {
                 // Append new data to existing data
-                this.originalEpgData.update((data) => [
-                    ...data,
-                    ...(response as MultiEpgChannel[]),
-                ]);
+                this.originalEpgData.update((data) => [...data, ...response]);
 
                 // Update isLastPage based on the number of channels received
                 this.isLastPage.set(response.length < this.visibleChannels);
@@ -329,7 +358,7 @@ export class MultiEpgContainerComponent
     /**
      * Get display name from EpgChannel
      */
-    getChannelName(channel: EpgChannel): string {
+    getChannelName(channel: EpgChannel | MultiEpgChannel): string {
         if (typeof channel.displayName === 'string') {
             return channel.displayName;
         }
@@ -349,7 +378,11 @@ export class MultiEpgContainerComponent
         if ('iconUrl' in channel && channel.iconUrl) {
             return channel.iconUrl;
         }
-        if (channel.icon && channel.icon.length > 0) {
+        if (
+            'icon' in channel &&
+            Array.isArray(channel.icon) &&
+            channel.icon.length > 0
+        ) {
             return channel.icon[0].src;
         }
         return '';
@@ -422,14 +455,17 @@ export class MultiEpgContainerComponent
             return;
         }
 
+        if (!this.epgBridge.supportsProgramSearch) {
+            this.programSearchResults.set([]);
+            this.isSearchingPrograms.set(false);
+            return;
+        }
+
         // Debounce search by 500ms - show spinner only when search actually starts
         this.searchDebounceTimer = setTimeout(async () => {
             this.isSearchingPrograms.set(true);
             try {
-                const results = await window.electron.searchEpgPrograms(
-                    query,
-                    20
-                );
+                const results = await this.epgBridge.searchPrograms(query, 20);
                 this.programSearchResults.set(
                     (results as ProgramSearchResult[]) || []
                 );

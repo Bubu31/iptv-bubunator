@@ -6,12 +6,16 @@ import {
     withMethods,
     withState,
 } from '@ngrx/signals';
-import { EpgItem } from 'shared-interfaces';
-import { DataService } from 'services';
+import { EpgItem } from '@iptvnator/shared/interfaces';
+import {
+    RuntimeCapabilitiesService,
+    SettingsStore,
+} from '@iptvnator/services';
 import {
     XtreamApiService,
     XtreamCredentials,
 } from '../../services/xtream-api.service';
+import { XtreamXmltvFallbackService } from '../../services/xtream-xmltv-fallback.service';
 import { createLogger } from '@iptvnator/portal/shared/util';
 
 /**
@@ -46,6 +50,7 @@ export function withEpg() {
         } | null;
         selectedItem?: () => {
             xtream_id?: number | null;
+            epg_channel_id?: string | null;
         } | null;
     };
 
@@ -56,14 +61,8 @@ export function withEpg() {
                 const now = Date.now();
                 const items = [...store.epgItems()].sort(
                     (left, right) =>
-                        getEpgTimestampMs(
-                            left.start,
-                            left.start_timestamp
-                        ) -
-                        getEpgTimestampMs(
-                            right.start,
-                            right.start_timestamp
-                        )
+                        getEpgTimestampMs(left.start, left.start_timestamp) -
+                        getEpgTimestampMs(right.start, right.start_timestamp)
                 );
 
                 return (
@@ -84,7 +83,11 @@ export function withEpg() {
 
         withMethods((store) => {
             const apiService = inject(XtreamApiService);
-            const dataService = inject(DataService);
+            const fallbackService = inject(XtreamXmltvFallbackService);
+            const runtime = inject(RuntimeCapabilitiesService);
+            const settingsStore = inject(SettingsStore);
+
+            const supportsEpg = (): boolean => runtime.supportsEpg;
 
             /**
              * Helper to get credentials from parent store
@@ -104,18 +107,40 @@ export function withEpg() {
                 };
             };
 
+            const preferUploaded = (): boolean =>
+                settingsStore.preferUploadedEpgOverXtream?.() ?? false;
+
+            const fetchFullProvider = (
+                credentials: XtreamCredentials,
+                xtreamId: number
+            ): Promise<EpgItem[]> =>
+                apiService.getFullEpg(credentials, xtreamId, {
+                    suppressErrorLog: true,
+                });
+
             return {
                 /**
-                 * Load EPG for the currently selected item
+                 * Load EPG for the currently selected item.
+                 * Falls back to local XMLTV (when configured in Settings → EPG)
+                 * if the Xtream provider returns no programs and the channel
+                 * has an `epg_channel_id`. The order is reversed when the user
+                 * sets `preferUploadedEpgOverXtream`.
                  */
                 async loadEpg(): Promise<EpgItem[]> {
+                    if (!supportsEpg()) {
+                        patchState(store, {
+                            epgItems: [],
+                            isLoadingEpg: false,
+                        });
+                        return [];
+                    }
+
                     const credentials = getCredentialsFromStore();
                     if (!credentials) {
                         patchState(store, { epgItems: [] });
                         return [];
                     }
 
-                    // Access selected item from parent store (from withSelection)
                     const storeAny = store as ParentSelectionStoreLike;
                     const selectedItem = storeAny.selectedItem?.();
 
@@ -127,22 +152,16 @@ export function withEpg() {
                     patchState(store, { epgItems: [], isLoadingEpg: true });
 
                     try {
-                        const epgItems = dataService.isElectron
-                            ? await apiService.getFullEpg(
-                                  credentials,
-                                  selectedItem.xtream_id,
-                                  {
-                                      suppressErrorLog: true,
-                                  }
-                              )
-                            : await apiService.getShortEpg(
-                                  credentials,
-                                  selectedItem.xtream_id,
-                                  10,
-                                  {
-                                      suppressErrorLog: true,
-                                  }
-                              );
+                        const epgItems =
+                            await fallbackService.resolveCurrentEpg({
+                                epgChannelId: selectedItem.epg_channel_id,
+                                preferUploaded: preferUploaded(),
+                                fetchProvider: () =>
+                                    fetchFullProvider(
+                                        credentials,
+                                        selectedItem.xtream_id!
+                                    ),
+                            });
 
                         patchState(store, {
                             epgItems,
@@ -160,24 +179,29 @@ export function withEpg() {
                     }
                 },
 
-                /**
-                 * Load EPG for a specific channel (for preview)
-                 */
-                async loadChannelEpg(streamId: number): Promise<EpgItem[]> {
-                    const credentials = getCredentialsFromStore();
-                    if (!credentials) {
+                async loadChannelEpg(
+                    streamId: number,
+                    epgChannelId?: string | null
+                ): Promise<EpgItem[]> {
+                    if (!supportsEpg()) {
                         return [];
                     }
 
+                    const credentials = getCredentialsFromStore();
+                    if (!credentials) return [];
+
                     try {
-                        return await apiService.getShortEpg(
-                            credentials,
-                            streamId,
-                            1,
-                            {
-                                suppressErrorLog: true,
-                            }
-                        );
+                        return await fallbackService.resolveCurrentEpg({
+                            epgChannelId,
+                            preferUploaded: preferUploaded(),
+                            fetchProvider: () =>
+                                apiService.getShortEpg(
+                                    credentials,
+                                    streamId,
+                                    1,
+                                    { suppressErrorLog: true }
+                                ),
+                        });
                     } catch (error) {
                         logger.error('Error loading channel EPG', error);
                         return [];

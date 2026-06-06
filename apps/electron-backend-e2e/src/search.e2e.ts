@@ -13,6 +13,7 @@ import {
     importM3uPlaylistFromNativeDialog,
     launchElectronApp,
     m3uFixturePath,
+    openGlobalFavorites,
     resetMockServers,
     stalkerMockServer,
     test,
@@ -207,10 +208,13 @@ test.describe('Electron Workspace Search', () => {
 
             await expectPathname(
                 app.mainWindow,
-                /\/workspace\/playlists\/[^/]+\/favorites$/
+                /\/workspace\/global-favorites$/
             );
             await expectQueryParam(app.mainWindow, 'q', sample.groupTitle);
-            await expectWorkspaceSearchScope(app.mainWindow, 'Favorites');
+            await expectWorkspaceSearchScope(
+                app.mainWindow,
+                'Global favorites'
+            );
             await expect(
                 channelItemByTitle(app.mainWindow, sample.targetTitle).first()
             ).toBeVisible();
@@ -222,7 +226,7 @@ test.describe('Electron Workspace Search', () => {
         }
     });
 
-    test('@search @m3u filters global favorites from the workspace header without leaving the persisted query model', async ({
+    test('@search @m3u filters global favorites from the workspace rail without leaving the persisted query model', async ({
         dataDir,
     }) => {
         const sample = loadM3uSearchFixture();
@@ -233,12 +237,7 @@ test.describe('Electron Workspace Search', () => {
             await waitForM3uCatalog(app.mainWindow);
             await toggleFavoriteForChannel(app.mainWindow, sample.targetTitle);
             await toggleFavoriteForChannel(app.mainWindow, sample.controlTitle);
-            await app.mainWindow
-                .getByRole('button', {
-                    name: 'All favorites (all playlists)',
-                    exact: true,
-                })
-                .click();
+            await openGlobalFavorites(app.mainWindow);
 
             await expectPathname(
                 app.mainWindow,
@@ -415,6 +414,147 @@ test.describe('Electron Workspace Search', () => {
         }
     });
 
+    test('@search @xtream filters VOD and series root views across categories', async ({
+        dataDir,
+        request,
+    }) => {
+        await resetMockServers(request, ['xtream']);
+        const vodSample = await fetchXtreamVodFixture(request);
+        const seriesSample = await fetchXtreamSeriesFixture(request);
+
+        const app = await launchElectronApp(dataDir);
+
+        try {
+            await addXtreamPortal(app.mainWindow, {
+                password: xtreamSearchPassword,
+                username: xtreamSearchUsername,
+            });
+            await waitForXtreamWorkspaceReady(app.mainWindow);
+
+            await expectXtreamRootCatalogSearch(app.mainWindow, {
+                pathPattern: /\/workspace\/xtreams\/[^/]+\/vod$/,
+                sample: vodSample,
+                sectionLabel: 'Movies',
+            });
+            await expect(
+                app.mainWindow.locator(headerSearchSelector)
+            ).toHaveValue(vodSample.targetTitle);
+
+            await fillWorkspaceSearch(app.mainWindow, '');
+            await openWorkspaceSection(app.mainWindow, 'Series');
+
+            await expectXtreamRootCatalogSearch(app.mainWindow, {
+                pathPattern: /\/workspace\/xtreams\/[^/]+\/series$/,
+                sample: seriesSample,
+                sectionLabel: 'Series',
+            });
+            await expect(
+                app.mainWindow.locator(headerSearchSelector)
+            ).toHaveValue(seriesSample.targetTitle);
+        } finally {
+            await closeElectronApp(app);
+        }
+    });
+
+    test('@search @xtream filters live root and category scopes while preserving playback sidebar', async ({
+        dataDir,
+        request,
+    }) => {
+        await resetMockServers(request, ['xtream']);
+        const sample = await fetchXtreamLiveFixture(request);
+
+        const app = await launchElectronApp(dataDir);
+
+        try {
+            await addXtreamPortal(app.mainWindow, {
+                password: xtreamSearchPassword,
+                username: xtreamSearchUsername,
+            });
+            await waitForXtreamWorkspaceReady(app.mainWindow);
+            await openWorkspaceSection(app.mainWindow, 'Live TV');
+            await expectPathname(
+                app.mainWindow,
+                /\/workspace\/xtreams\/[^/]+\/live$/
+            );
+
+            await fillWorkspaceSearch(app.mainWindow, sample.targetTitle);
+
+            await expectPathname(
+                app.mainWindow,
+                /\/workspace\/xtreams\/[^/]+\/live$/
+            );
+            await expectQueryParam(app.mainWindow, 'q', sample.targetTitle);
+            await expectWorkspaceSearchScope(
+                app.mainWindow,
+                'Live TV / All Items'
+            );
+            await expect(
+                liveChannelSidebar(app.mainWindow)
+                    .locator('[data-test-id="channel-item"]')
+                    .first()
+            ).toBeVisible({ timeout: 20000 });
+            await expect(
+                channelItemByTitle(app.mainWindow, sample.targetTitle).first()
+            ).toBeVisible({ timeout: 20000 });
+            await expect(
+                channelItemByTitle(app.mainWindow, sample.controlTitle)
+            ).toHaveCount(0);
+
+            await channelItemByTitle(app.mainWindow, sample.targetTitle)
+                .first()
+                .click();
+
+            await expect(
+                app.mainWindow.locator(
+                    'app-live-stream-layout .content-container .video-player'
+                )
+            ).toBeVisible({ timeout: 20000 });
+            await expect(
+                liveChannelSidebar(app.mainWindow)
+                    .locator('[data-test-id="channel-item"]')
+                    .first()
+            ).toBeVisible();
+            await expect(
+                channelItemByTitle(app.mainWindow, sample.targetTitle).first()
+            ).toHaveClass(/(^|\s)active(\s|$)/);
+
+            await fillWorkspaceSearch(app.mainWindow, '');
+            await expectQueryParamAbsent(app.mainWindow, 'q');
+            await clickCategoryByNameExact(app.mainWindow, sample.categoryName);
+            await expectWorkspaceSearchScope(
+                app.mainWindow,
+                `Live TV / ${sample.categoryName}`
+            );
+            await expect(
+                app.mainWindow.locator(
+                    'app-live-stream-layout .content-container .video-player'
+                )
+            ).toBeVisible({ timeout: 20000 });
+            await expect(
+                channelItemByTitle(app.mainWindow, sample.targetTitle).first()
+            ).toHaveClass(/(^|\s)active(\s|$)/);
+            await fillWorkspaceSearch(app.mainWindow, sample.targetTitle);
+
+            await expectPathname(
+                app.mainWindow,
+                /\/workspace\/xtreams\/[^/]+\/live(?:\/[^/]+)?$/
+            );
+            await expectQueryParam(app.mainWindow, 'q', sample.targetTitle);
+            await expectWorkspaceSearchScope(
+                app.mainWindow,
+                `Live TV / ${sample.categoryName}`
+            );
+            await expect(
+                channelItemByTitle(app.mainWindow, sample.targetTitle).first()
+            ).toBeVisible({ timeout: 20000 });
+            await expect(
+                channelItemByTitle(app.mainWindow, sample.controlTitle)
+            ).toHaveCount(0);
+        } finally {
+            await closeElectronApp(app);
+        }
+    });
+
     test('@search @xtream promotes dashboard header search into advanced playlist search', async ({
         dataDir,
         request,
@@ -567,7 +707,7 @@ test.describe('Electron Workspace Search', () => {
             await openWorkspaceSection(app.mainWindow, 'Favorites');
             await expectPathname(
                 app.mainWindow,
-                /\/workspace\/xtreams\/[^/]+\/favorites$/
+                /\/workspace\/global-favorites$/
             );
             await expect(
                 contentCardByTitle(
@@ -592,7 +732,10 @@ test.describe('Electron Workspace Search', () => {
                 'q',
                 resolvedTitles.targetTitle
             );
-            await expectWorkspaceSearchScope(app.mainWindow, 'Favorites');
+            await expectWorkspaceSearchScope(
+                app.mainWindow,
+                'Global favorites'
+            );
             await expect(
                 contentCardByTitle(
                     app.mainWindow,
@@ -770,6 +913,16 @@ test.describe('Electron Workspace Search', () => {
             await expect(
                 contentCardByTitle(app.mainWindow, sample.targetTitle).first()
             ).toBeVisible({ timeout: 20000 });
+            await contentCardByTitle(app.mainWindow, sample.targetTitle)
+                .first()
+                .click();
+            await expect(
+                app.mainWindow.locator('app-content-hero')
+            ).toContainText(flexibleTextPattern(sample.targetTitle), {
+                timeout: 20000,
+            });
+            await playCurrentDetail(app.mainWindow);
+            await expectInlinePlayerWithoutDialog(app.mainWindow);
         } finally {
             await closeElectronApp(app);
         }
@@ -807,7 +960,7 @@ test.describe('Electron Workspace Search', () => {
             await openWorkspaceSection(app.mainWindow, 'Favorites');
             await expectPathname(
                 app.mainWindow,
-                /\/workspace\/stalker\/[^/]+\/favorites$/
+                /\/workspace\/global-favorites$/
             );
             await expect(
                 channelItemByTitle(app.mainWindow, sample.targetTitle).first()
@@ -819,7 +972,10 @@ test.describe('Electron Workspace Search', () => {
             await fillWorkspaceSearch(app.mainWindow, sample.targetTitle);
 
             await expectQueryParam(app.mainWindow, 'q', sample.targetTitle);
-            await expectWorkspaceSearchScope(app.mainWindow, 'Favorites');
+            await expectWorkspaceSearchScope(
+                app.mainWindow,
+                'Global favorites'
+            );
             await expect(
                 channelItemByTitle(app.mainWindow, sample.targetTitle).first()
             ).toBeVisible();
@@ -912,6 +1068,15 @@ async function fetchXtreamVodFixture(
     return fetchXtreamFixture(request, {
         categoriesAction: 'get_vod_categories',
         itemsAction: 'get_vod_streams',
+    });
+}
+
+async function fetchXtreamLiveFixture(
+    request: APIRequestContext
+): Promise<XtreamVodFixture> {
+    return fetchXtreamFixture(request, {
+        categoriesAction: 'get_live_categories',
+        itemsAction: 'get_live_streams',
     });
 }
 
@@ -1210,27 +1375,30 @@ async function clickCategoryByNameExact(
     const category = await pickPreferredCategory(categories);
 
     await expect(category).toBeVisible();
+    await expect(category).toBeEnabled();
     await category.scrollIntoViewIfNeeded();
     const categoryId =
         (await category.getAttribute('data-category-id'))?.trim() ?? '';
     await category.click();
-    await expect
-        .poll(async () => {
-            const pathname = new URL(page.url()).pathname;
-            const isSelected =
-                (await category.getAttribute('aria-current')) === 'true';
-
-            return (
-                isSelected ||
-                (categoryId.length > 0 &&
-                    (pathname.endsWith(`/${categoryId}`) ||
-                        pathname.includes(`/${categoryId}/`)))
-            );
-        })
-        .toBe(true);
+    const selectedCategory =
+        categoryId.length > 0
+            ? page
+                  .locator(
+                      `app-workspace-context-panel .category-item[data-category-id="${categoryId}"]:visible`
+                  )
+                  .first()
+            : category;
+    await expect(selectedCategory).toHaveAttribute('aria-current', 'true', {
+        timeout: 20000,
+    });
 }
 
 async function openWorkspaceSection(page: Page, label: string): Promise<void> {
+    if (label === 'Favorites') {
+        await openGlobalFavorites(page);
+        return;
+    }
+
     await page.getByRole('link', { name: label, exact: true }).click();
 }
 
@@ -1259,6 +1427,10 @@ async function ensureGroupSelected(
 
 function xtreamSearchResultCards(page: Page) {
     return page.locator('app-search-results .results-grid .content-card');
+}
+
+function liveChannelSidebar(page: Page) {
+    return page.locator('app-live-stream-layout .sidebar');
 }
 
 function gridListCardByTitle(page: Page, title: string) {
@@ -1328,6 +1500,34 @@ async function resolveVisibleXtreamTitles(
     };
 }
 
+async function expectXtreamRootCatalogSearch(
+    page: Page,
+    options: {
+        pathPattern: RegExp;
+        sample: XtreamVodFixture;
+        sectionLabel: string;
+    }
+): Promise<void> {
+    await openWorkspaceSection(page, options.sectionLabel);
+    await expectPathname(page, options.pathPattern);
+    await fillWorkspaceSearch(page, options.sample.targetTitle);
+
+    await expectPathname(page, options.pathPattern);
+    await expectQueryParam(page, 'q', options.sample.targetTitle);
+    await expectWorkspaceSearchScope(
+        page,
+        `${options.sectionLabel} / All Items`
+    );
+    const contentLayout = page.locator('.category-content-layout');
+    await expect(contentLayout).toContainText(
+        flexibleTextPattern(options.sample.targetTitle),
+        { timeout: 20000 }
+    );
+    await expect(contentLayout).not.toContainText(
+        flexibleTextPattern(options.sample.controlTitle)
+    );
+}
+
 async function addCurrentDetailToFavorites(page: Page): Promise<void> {
     const addButton = page
         .locator('button.favorite-btn')
@@ -1351,6 +1551,22 @@ async function goBackFromDetail(page: Page): Promise<void> {
 
     await expect(backButton).toBeVisible({ timeout: 20000 });
     await backButton.click();
+}
+
+async function playCurrentDetail(page: Page): Promise<void> {
+    const playButton = page.locator('button.play-btn').first();
+
+    await expect(playButton).toBeVisible({ timeout: 20000 });
+    await playButton.click();
+}
+
+async function expectInlinePlayerWithoutDialog(page: Page): Promise<void> {
+    await expect(
+        page.locator('app-portal-inline-player app-web-player-view').first()
+    ).toBeVisible({ timeout: 20000 });
+    await expect(
+        page.locator('mat-dialog-container app-web-player-view')
+    ).toHaveCount(0);
 }
 
 async function pickPreferredCategory(categories: Locator): Promise<Locator> {
@@ -1590,4 +1806,10 @@ async function expectQueryParam(
     await expect
         .poll(() => new URL(page.url()).searchParams.get(name))
         .toBe(value);
+}
+
+async function expectQueryParamAbsent(page: Page, name: string): Promise<void> {
+    await expect
+        .poll(() => new URL(page.url()).searchParams.has(name))
+        .toBe(false);
 }

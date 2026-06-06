@@ -1,34 +1,49 @@
-import { Component, computed, inject, signal, viewChild } from '@angular/core';
+import {
+    Component,
+    computed,
+    inject,
+    signal,
+    ViewEncapsulation,
+    viewChild,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
-import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import {
     MAT_DIALOG_DATA,
     MatDialogModule,
     MatDialogRef,
 } from '@angular/material/dialog';
+import { MatIcon } from '@angular/material/icon';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Store } from '@ngrx/store';
 import { TranslateModule, TranslateService } from '@ngx-translate/core';
 import { PlaylistType } from '@iptvnator/playlist/shared/ui';
-import {
-    M3uSubType,
-    PlaylistCategory,
-} from '@iptvnator/workspace/shell/util';
-import { PlaylistActions } from 'm3u-state';
-import { DataService } from 'services';
-import { PLAYLIST_PARSE_BY_URL } from 'shared-interfaces';
+import { PlaylistActions } from '@iptvnator/m3u-state';
+import { DataService } from '@iptvnator/services';
+import { PLAYLIST_PARSE_BY_URL } from '@iptvnator/shared/interfaces';
 import { FileUploadComponent } from '../file-upload/file-upload.component';
 import { StalkerPortalImportComponent } from '../stalker-portal-import/stalker-portal-import.component';
 import { TextImportComponent } from '../text-import/text-import.component';
 import { UrlUploadComponent } from '../url-upload/url-upload.component';
 import { XtreamCodeImportComponent } from '../xtream-code-import/xtream-code-import.component';
 
+/**
+ * Flat 5-method option model — replaces the prior category × subtype matrix
+ * (M3U/Xtream/Stalker × URL/File/Text) which created 9 combinations of which
+ * only 5 were real. Now each entry IS a method, no nesting.
+ */
+export interface PlaylistMethodOption {
+    value: PlaylistType;
+    icon: string;
+    labelKey: string;
+    subKey: string;
+}
+
 @Component({
     imports: [
         FileUploadComponent,
         MatButtonModule,
-        MatButtonToggleModule,
         MatDialogModule,
+        MatIcon,
         StalkerPortalImportComponent,
         TextImportComponent,
         TranslateModule,
@@ -38,6 +53,7 @@ import { XtreamCodeImportComponent } from '../xtream-code-import/xtream-code-imp
     selector: 'app-add-playlist',
     templateUrl: './add-playlist-dialog.component.html',
     styleUrl: './add-playlist-dialog.component.scss',
+    encapsulation: ViewEncapsulation.None,
 })
 export class AddPlaylistDialogComponent {
     private dataService = inject(DataService);
@@ -50,53 +66,70 @@ export class AddPlaylistDialogComponent {
     });
 
     readonly urlUpload = viewChild(UrlUploadComponent);
+    readonly fileUpload = viewChild(FileUploadComponent);
     readonly textImport = viewChild(TextImportComponent);
     readonly xtreamImport = viewChild(XtreamCodeImportComponent);
     readonly stalkerImport = viewChild(StalkerPortalImportComponent);
 
-    readonly category = signal<PlaylistCategory>('m3u');
-    readonly m3uSubType = signal<M3uSubType>('url');
+    readonly method = signal<PlaylistType>('url');
 
-    readonly playlistType = computed<PlaylistType>(() => {
-        const cat = this.category();
-        if (cat === 'xtream') return 'xtream';
-        if (cat === 'stalker') return 'stalker';
-        return this.m3uSubType();
-    });
+    // Order matches the v0.22 mockup left-to-right: URL first (Most common),
+    // then File, Xtream credentials, Stalker portal, raw text paste. Each
+    // entry stands on its own — no nested subtypes. Labels are short and
+    // sentence-cased; the "Add via …" / "Add Xtreme Code" wording from the
+    // old tab labels is redundant inside a dialog already titled "Add
+    // playlist".
+    readonly methodOptions: PlaylistMethodOption[] = [
+        {
+            value: 'url',
+            icon: 'public',
+            labelKey: 'HOME.ADD_PLAYLIST.METHOD_URL_LABEL',
+            subKey: 'HOME.ADD_PLAYLIST.METHOD_URL_SUB',
+        },
+        {
+            value: 'file',
+            icon: 'folder_open',
+            labelKey: 'HOME.ADD_PLAYLIST.METHOD_FILE_LABEL',
+            subKey: 'HOME.ADD_PLAYLIST.METHOD_FILE_SUB',
+        },
+        {
+            value: 'xtream',
+            icon: 'vpn_key',
+            labelKey: 'HOME.ADD_PLAYLIST.METHOD_XTREAM_LABEL',
+            subKey: 'HOME.ADD_PLAYLIST.METHOD_XTREAM_SUB',
+        },
+        {
+            value: 'stalker',
+            icon: 'cast',
+            labelKey: 'HOME.ADD_PLAYLIST.METHOD_STALKER_LABEL',
+            subKey: 'HOME.ADD_PLAYLIST.METHOD_STALKER_SUB',
+        },
+        {
+            value: 'text',
+            icon: 'subject',
+            labelKey: 'HOME.ADD_PLAYLIST.METHOD_TEXT_LABEL',
+            subKey: 'HOME.ADD_PLAYLIST.METHOD_TEXT_SUB',
+        },
+    ];
+
+    /**
+     * Backwards-compatible alias. The template's @switch and the action
+     * buttons key off this; keeping the name avoids churn in 5 case branches.
+     */
+    readonly playlistType = computed<PlaylistType>(() => this.method());
 
     constructor() {
         if (this.data?.type) {
-            this.initFromType(this.data.type);
-        }
-    }
-
-    private initFromType(type: PlaylistType): void {
-        if (type === 'xtream') {
-            this.category.set('xtream');
-        } else if (type === 'stalker') {
-            this.category.set('stalker');
-        } else {
-            this.category.set('m3u');
-            this.m3uSubType.set(type as M3uSubType);
+            this.method.set(this.data.type);
         }
     }
 
     /**
-     * Parse and store uploaded playlist
-     * @param payload
+     * Closes the dialog after a successful file import. The actual parse and
+     * dispatch happens inside `PlaylistFileImportService` (called from the
+     * `FileUploadComponent`).
      */
-    handlePlaylist(payload: { uploadEvent: Event; file: File }): void {
-        const playlist = (payload.uploadEvent.target as FileReader)
-            .result as string;
-
-        this.store.dispatch(
-            PlaylistActions.parsePlaylist({
-                uploadType: 'FILE',
-                playlist,
-                title: payload.file.name,
-                path: (payload.file as File & { path?: string }).path,
-            })
-        );
+    onFileImported(): void {
         this.closeDialog();
     }
 
@@ -120,7 +153,9 @@ export class AddPlaylistDialogComponent {
             return;
         }
 
-        const playlistName = this.normalizeOptionalValue(formValue?.playlistName);
+        const playlistName = this.normalizeOptionalValue(
+            formValue?.playlistName
+        );
 
         this.dataService.sendIpcEvent(PLAYLIST_PARSE_BY_URL, {
             url: playlistUrl,
@@ -142,6 +177,42 @@ export class AddPlaylistDialogComponent {
             })
         );
         this.closeDialog();
+    }
+
+    clearCurrentForm(): void {
+        switch (this.playlistType()) {
+            case 'url':
+                this.urlUpload()?.clearForm();
+                break;
+            case 'file':
+                this.fileUpload()?.clearSelection();
+                break;
+            case 'text':
+                this.textImport()?.clearForm();
+                break;
+            case 'xtream':
+                this.xtreamImport()?.clearForm();
+                break;
+            case 'stalker':
+                this.stalkerImport()?.clearForm();
+                break;
+        }
+    }
+
+    isClearDisabled(): boolean {
+        switch (this.playlistType()) {
+            case 'file':
+                return (
+                    !this.fileUpload()?.selectedFile() ||
+                    !!this.fileUpload()?.isImporting()
+                );
+            case 'xtream':
+                return !!this.xtreamImport()?.isTestingConnection;
+            case 'stalker':
+                return !!this.stalkerImport()?.isLoading();
+            default:
+                return false;
+        }
     }
 
     closeDialog(): void {

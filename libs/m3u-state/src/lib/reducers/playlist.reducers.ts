@@ -1,5 +1,5 @@
 import { on } from '@ngrx/store';
-import { Channel } from 'shared-interfaces';
+import { Channel } from '@iptvnator/shared/interfaces';
 import { PlaylistActions } from '../actions';
 import { playlistsAdapter } from '../playlists.state';
 import { PlaylistState } from '../state';
@@ -31,7 +31,9 @@ export const playlistReducers = [
         };
     }),
     on(PlaylistActions.updatePlaylist, (state, action): PlaylistState => {
-        const isActivePlaylist = state.playlists.selectedId === action.playlistId;
+        const isActivePlaylist =
+            state.playlists.selectedId === action.playlistId;
+        const currentPlaylist = state.playlists.entities[action.playlistId];
         return {
             ...state,
             channels: isActivePlaylist
@@ -48,8 +50,10 @@ export const playlistReducers = [
                         count: action.playlist.playlist.items.length,
                         userAgent: action.playlist.userAgent,
                         favorites:
-                            state.playlists.entities[action.playlistId]
-                                ?.favorites ?? [],
+                            currentPlaylist?.favorites ?? [],
+                        autoRefresh:
+                            currentPlaylist?.autoRefresh ??
+                            action.playlist.autoRefresh,
                     },
                 },
                 state.playlists
@@ -110,6 +114,10 @@ export const playlistReducers = [
                         ...(p.userAgent != null
                             ? { userAgent: p.userAgent }
                             : {}),
+                        ...(p.referrer !== undefined
+                            ? { referrer: p.referrer }
+                            : {}),
+                        ...(p.origin !== undefined ? { origin: p.origin } : {}),
                         ...(p.serverUrl != null
                             ? { serverUrl: p.serverUrl }
                             : {}),
@@ -120,6 +128,11 @@ export const playlistReducers = [
                             : {}),
                         ...(p.portalUrl != null
                             ? { portalUrl: p.portalUrl }
+                            : {}),
+                        ...(p.isFullStalkerPortal !== undefined
+                            ? {
+                                  isFullStalkerPortal: p.isFullStalkerPortal,
+                              }
                             : {}),
                         ...(p.favorites != null
                             ? { favorites: p.favorites }

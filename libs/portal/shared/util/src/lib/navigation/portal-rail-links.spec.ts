@@ -1,11 +1,11 @@
 import { buildPortalRailLinks } from './portal-rail-links';
 
 describe('buildPortalRailLinks', () => {
-    it('builds Xtream links with scoped tooltip labels on Electron', () => {
+    it('builds Xtream links with scoped tooltip labels when downloads are supported', () => {
         const links = buildPortalRailLinks({
             provider: 'xtreams',
             playlistId: 'xtream-1',
-            isElectron: true,
+            supportsDownloads: true,
             workspace: false,
         });
 
@@ -17,65 +17,64 @@ describe('buildPortalRailLinks', () => {
         expect(links.secondary.map((link) => link.section)).toEqual([
             'recently-added',
             'search',
-            'recent',
-            'favorites',
             'downloads',
         ]);
 
         expect(links.primary[0]?.tooltip).toBe('Movies (this playlist)');
-        expect(links.secondary[3]?.tooltip).toBe('Favorites (this playlist)');
-        expect(links.secondary[4]?.tooltip).toBe('Downloads (this playlist)');
+        expect(links.secondary[2]?.tooltip).toBe('Downloads (this playlist)');
     });
 
-    it('builds workspace Xtream links without downloads on web', () => {
+    it('builds workspace Xtream content links on web without downloads', () => {
         const links = buildPortalRailLinks({
             provider: 'xtreams',
             playlistId: 'xtream-web',
-            isElectron: false,
+            supportsDownloads: false,
             workspace: true,
         });
 
-        expect(links.primary).toEqual([
-            {
-                icon: 'movie',
-                tooltip: 'Xtream library (this playlist)',
-                path: ['/workspace', 'xtreams', 'xtream-web'],
-                exact: true,
-                section: 'library',
-            },
+        expect(links.primary.map((link) => link.section)).toEqual([
+            'vod',
+            'live',
+            'series',
         ]);
-        expect(links.secondary).toEqual([]);
+        expect(links.secondary.map((link) => link.section)).toEqual([
+            'recently-added',
+            'search',
+        ]);
+        expect(
+            links.secondary.some((link) => link.section === 'downloads')
+        ).toBe(false);
     });
 
-    it('builds Stalker links with scoped tooltip labels', () => {
+    it('builds workspace Stalker links with scoped tooltip labels on web', () => {
         const links = buildPortalRailLinks({
             provider: 'stalker',
             playlistId: 'portal-1',
-            isElectron: false,
-            workspace: false,
+            supportsDownloads: false,
+            workspace: true,
         });
 
         expect(links.primary.map((link) => link.section)).toEqual([
             'vod',
             'itv',
+            'radio',
             'series',
         ]);
-        expect(links.secondary.map((link) => link.section)).toEqual([
-            'search',
-            'recent',
-            'favorites',
-        ]);
+        expect(links.secondary.map((link) => link.section)).toEqual(['search']);
 
         expect(links.primary[1]?.tooltip).toBe('Live TV (this playlist)');
+        expect(links.primary[2]?.tooltip).toBe('Radio (this playlist)');
         expect(links.secondary[0]?.tooltip).toBe('Search (this playlist)');
-        expect(links.secondary[2]?.tooltip).toBe('Favorites (this playlist)');
+        expect(
+            links.secondary.some((link) => link.section === 'downloads')
+        ).toBe(false);
     });
 
     it('builds M3U playlist links with scoped tooltip labels', () => {
         const links = buildPortalRailLinks({
             provider: 'playlists',
             playlistId: 'm3u-1',
-            isElectron: true,
+            supportsDownloads: true,
             workspace: true,
         });
 
@@ -93,20 +92,6 @@ describe('buildPortalRailLinks', () => {
                 path: ['/workspace', 'playlists', 'm3u-1', 'groups'],
                 exact: true,
                 section: 'groups',
-            },
-            {
-                icon: 'history',
-                tooltip: 'Recently viewed (this playlist)',
-                path: ['/workspace', 'playlists', 'm3u-1', 'recent'],
-                exact: true,
-                section: 'recent',
-            },
-            {
-                icon: 'favorite',
-                tooltip: 'Favorites (this playlist)',
-                path: ['/workspace', 'playlists', 'm3u-1', 'favorites'],
-                exact: true,
-                section: 'favorites',
             },
         ]);
         expect(links.secondary).toEqual([]);

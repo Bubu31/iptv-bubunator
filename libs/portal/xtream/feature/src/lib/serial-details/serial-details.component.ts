@@ -1,5 +1,13 @@
 import { Location, SlicePipe } from '@angular/common';
-import { Component, effect, inject, OnDestroy, OnInit, signal } from '@angular/core';
+import {
+    Component,
+    computed,
+    effect,
+    inject,
+    OnDestroy,
+    OnInit,
+    signal,
+} from '@angular/core';
 import { MatIcon } from '@angular/material/icon';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { ActivatedRoute } from '@angular/router';
@@ -9,21 +17,27 @@ import {
     SeasonContainerComponent,
     SeasonContainerPlaybackToggleRequest,
     SeasonContainerXtreamDownloadContext,
-} from 'components';
+} from '@iptvnator/ui/components';
 import {
     PORTAL_EXTERNAL_PLAYBACK,
     PORTAL_PLAYBACK_POSITIONS,
     PORTAL_PLAYER,
+    getSeriesQuickStartAction,
 } from '@iptvnator/portal/shared/util';
 import { XtreamStore } from '@iptvnator/portal/xtream/data-access';
-import { PortalInlinePlayerComponent } from '@iptvnator/ui/playback';
+import {
+    type PlaybackFallbackRequest,
+    PortalInlinePlayerComponent,
+} from '@iptvnator/ui/playback';
+import { PlaybackPositionRuntimeBridgeService } from '@iptvnator/services';
 import {
     PlaybackPositionData,
     PlayerContentInfo,
     ResolvedPortalPlayback,
+    XtreamSerieInfo,
     XtreamSerieEpisode,
     XtreamSerieDetails,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 
 type XtreamSerieDetailsView = XtreamSerieDetails & {
     readonly series_id: number;
@@ -32,7 +46,19 @@ type XtreamSerieDetailsView = XtreamSerieDetails & {
 @Component({
     selector: 'app-serial-details',
     templateUrl: './serial-details.component.html',
-    styleUrls: ['../../../../../../ui/components/src/lib/styles/detail-view.scss'],
+    styleUrls: [
+        '../../../../../../ui/components/src/lib/styles/detail-view.scss',
+    ],
+    styles: [
+        `
+            :host {
+                display: block;
+                width: 100%;
+                height: 100%;
+                min-height: 0;
+            }
+        `,
+    ],
     imports: [
         ContentHeroComponent,
         MatIcon,
@@ -47,6 +73,9 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
     private readonly route = inject(ActivatedRoute);
     private readonly xtreamStore = inject(XtreamStore);
     private readonly playbackPositions = inject(PORTAL_PLAYBACK_POSITIONS);
+    private readonly playbackPositionBridge = inject(
+        PlaybackPositionRuntimeBridgeService
+    );
     private readonly portalPlayer = inject(PORTAL_PLAYER);
     private readonly externalPlayback = inject(PORTAL_EXTERNAL_PLAYBACK);
     private readonly snackBar = inject(MatSnackBar);
@@ -65,10 +94,22 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
     readonly xtreamDownloadContext =
         signal<SeasonContainerXtreamDownloadContext | null>(null);
     private readonly detailsInitDone = signal(false);
+    private readonly backdropBackfillKey = signal<string | null>(null);
     private lastSaveTime = 0;
     private unsubscribePositionUpdates: (() => void) | null = null;
     readonly openingEpisodeId = signal<number | null>(null);
     readonly activeEpisodeId = signal<number | null>(null);
+    readonly quickStartAction = computed(() => {
+        const item = this.selectedItem();
+        if (!item) {
+            return null;
+        }
+
+        return getSeriesQuickStartAction({
+            seasons: item.episodes ?? {},
+            playbackPositions: this.episodePlaybackPositions(),
+        });
+    });
 
     constructor() {
         effect(() => {
@@ -113,6 +154,35 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
         });
 
         effect(() => {
+            const playlistId = this.currentPlaylistId();
+            const selectedItem = this.selectedItem();
+            const xtreamId = Number(selectedItem?.series_id ?? 0);
+            const backdropUrl = selectedItem?.info?.backdrop_path?.[0]?.trim();
+
+            if (
+                !playlistId ||
+                !Number.isFinite(xtreamId) ||
+                xtreamId <= 0 ||
+                !backdropUrl
+            ) {
+                return;
+            }
+
+            const backfillKey = `${playlistId}:${xtreamId}:${backdropUrl}`;
+            if (this.backdropBackfillKey() === backfillKey) {
+                return;
+            }
+
+            this.backdropBackfillKey.set(backfillKey);
+            void this.xtreamStore.backfillContentBackdrop({
+                xtreamId,
+                contentType: 'series',
+                playlist: this.xtreamStore.currentPlaylist,
+                backdropUrl,
+            });
+        });
+
+        effect(() => {
             const session = this.externalPlayback.activeSession();
             const selectedItem = this.selectedItem();
             const playlistId = this.currentPlaylistId();
@@ -147,25 +217,23 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
             this.activeEpisodeId.set(null);
         });
 
-        if (window.electron?.onPlaybackPositionUpdate) {
-            this.unsubscribePositionUpdates =
-                window.electron.onPlaybackPositionUpdate(
-                    (data: PlaybackPositionData) => {
-                        const selectedItem = this.selectedItem();
+        this.unsubscribePositionUpdates =
+            this.playbackPositionBridge.onPlaybackPositionUpdate(
+                (data: PlaybackPositionData) => {
+                    const selectedItem = this.selectedItem();
 
-                        if (
-                            data.contentType !== 'episode' ||
-                            data.playlistId !== this.currentPlaylistId() ||
-                            data.seriesXtreamId !==
-                                Number(selectedItem?.series_id ?? 0)
-                        ) {
-                            return;
-                        }
-
-                        this.updateEpisodePlaybackPosition(data);
+                    if (
+                        data.contentType !== 'episode' ||
+                        data.playlistId !== this.currentPlaylistId() ||
+                        data.seriesXtreamId !==
+                            Number(selectedItem?.series_id ?? 0)
+                    ) {
+                        return;
                     }
-                );
-        }
+
+                    this.updateEpisodePlaybackPosition(data);
+                }
+            ) ?? null;
     }
 
     ngOnInit(): void {
@@ -186,24 +254,32 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
     }
 
     playEpisode(episode: XtreamSerieEpisode): void {
+        const playlist = this.xtreamStore.currentPlaylist();
+        const selectedItem = this.selectedItem();
+        if (!playlist || !selectedItem) {
+            return;
+        }
+
         this.addToRecentlyViewed(this.route.snapshot.params.serialId);
 
         const streamUrl = this.xtreamStore.constructEpisodeStreamUrl(episode);
         const contentInfo: PlayerContentInfo = {
-            playlistId: this.xtreamStore.currentPlaylist().id,
+            playlistId: playlist.id,
             contentXtreamId: Number(episode.id),
             contentType: 'episode',
-            seriesXtreamId: Number(this.selectedItem().series_id),
+            seriesXtreamId: Number(selectedItem.series_id),
             seasonNumber: Number(episode.season),
             episodeNumber: Number(episode.episode_num),
         };
 
-        const position = this.episodePlaybackPositions().get(Number(episode.id));
+        const position = this.episodePlaybackPositions().get(
+            Number(episode.id)
+        );
 
         const playback: ResolvedPortalPlayback = {
             streamUrl,
             title: episode.title,
-            thumbnail: this.selectedItem().info.cover,
+            thumbnail: selectedItem.info.cover,
             startTime: position?.positionSeconds,
             contentInfo,
         };
@@ -211,11 +287,31 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
         this.startPlayback(playback);
     }
 
+    playQuickStartEpisode(): void {
+        const action = this.quickStartAction();
+        if (!action || action.disabled) {
+            return;
+        }
+
+        this.playEpisode(action.episode);
+    }
+
     toggleFavorite(): void {
+        const playlist = this.xtreamStore.currentPlaylist();
+        if (!playlist) {
+            return;
+        }
+
         this.xtreamStore.toggleFavorite(
             this.route.snapshot.params.serialId,
-            this.xtreamStore.currentPlaylist().id
+            playlist.id,
+            'series',
+            this.selectedItem()?.info?.backdrop_path?.[0]
         );
+    }
+
+    getBackdropUrl(info: XtreamSerieInfo): string | undefined {
+        return info.backdrop_path?.[0];
     }
 
     goBack(): void {
@@ -254,17 +350,26 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
     showCopyNotification(): void {
         this.snackBar.open(
             this.translateService.instant('PORTALS.STREAM_URL_COPIED'),
-            null,
+            undefined,
             {
                 duration: 2000,
             }
         );
     }
 
+    handleExternalFallbackRequest(request: PlaybackFallbackRequest): void {
+        void this.portalPlayer.openExternalPlayback(
+            request.playback,
+            request.player
+        );
+    }
+
     private addToRecentlyViewed(xtreamId: number): void {
         this.xtreamStore.addRecentItem({
-            contentId: xtreamId,
+            xtreamId,
+            contentType: 'series',
             playlist: this.xtreamStore.currentPlaylist,
+            backdropUrl: this.selectedItem()?.info?.backdrop_path?.[0],
         });
     }
 
@@ -308,10 +413,11 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
         playlistId: string,
         seriesXtreamId: number
     ): Promise<void> {
-        const positions = await this.playbackPositions.getSeriesPlaybackPositions(
-            playlistId,
-            seriesXtreamId
-        );
+        const positions =
+            await this.playbackPositions.getSeriesPlaybackPositions(
+                playlistId,
+                seriesXtreamId
+            );
         const positionsMap = new Map<number, PlaybackPositionData>();
         positions.forEach((position) => {
             positionsMap.set(position.contentXtreamId, position);
@@ -319,7 +425,9 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
         this.episodePlaybackPositions.set(positionsMap);
     }
 
-    private updateEpisodePlaybackPosition(position: PlaybackPositionData): void {
+    private updateEpisodePlaybackPosition(
+        position: PlaybackPositionData
+    ): void {
         const updated = new Map(this.episodePlaybackPositions());
         updated.set(position.contentXtreamId, position);
         this.episodePlaybackPositions.set(updated);
@@ -341,7 +449,11 @@ export class SerialDetailsComponent implements OnInit, OnDestroy {
             categoryId: Number(categoryId),
         });
         const serialXtreamId = Number(serialId);
-        this.xtreamStore.checkFavoriteStatus(serialXtreamId, playlistId);
+        this.xtreamStore.checkFavoriteStatus(
+            serialXtreamId,
+            playlistId,
+            'series'
+        );
         void this.loadSeriesPlaybackPositions(playlistId, serialXtreamId);
     }
 }

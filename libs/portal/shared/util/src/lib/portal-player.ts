@@ -2,7 +2,8 @@ import { InjectionToken } from '@angular/core';
 import {
     ExternalPlayerSession,
     ResolvedPortalPlayback,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
+import type { ExternalPlayerName } from '@iptvnator/shared/interfaces';
 
 export interface PortalPlayer {
     isEmbeddedPlayer(): boolean;
@@ -22,6 +23,10 @@ export interface PortalPlayer {
     openResolvedPlayback(
         playback: ResolvedPortalPlayback,
         hideExternalInfoDialog?: boolean
+    ): Promise<ExternalPlayerSession | void>;
+    openExternalPlayback(
+        playback: ResolvedPortalPlayback,
+        player: ExternalPlayerName
     ): Promise<ExternalPlayerSession | void>;
 }
 

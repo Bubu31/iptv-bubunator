@@ -8,14 +8,10 @@
         <!-- Tags: Year, Genre, Rating -->
         <ng-container hero-tags>
             @if (serial.info.releasedate) {
-                <span class="details__tag">{{
-                    serial.info.releasedate
-                }}</span>
+                <span class="details__tag">{{ serial.info.releasedate }}</span>
             }
             @if (serial.info.genre) {
-                <span class="details__tag">{{
-                    serial.info.genre
-                }}</span>
+                <span class="details__tag">{{ serial.info.genre }}</span>
             }
             @if (serial.info.rating_imdb) {
                 <span class="details__tag details__tag--rating">
@@ -33,9 +29,7 @@
         <ng-container hero-meta>
             @if (serial.info.actors) {
                 <div class="details__meta-item">
-                    <span class="label">{{
-                        'XTREAM.ACTORS' | translate
-                    }}</span>
+                    <span class="label">{{ 'XTREAM.ACTORS' | translate }}</span>
                     <span class="value">{{ serial.info.actors }}</span>
                 </div>
             }
@@ -51,10 +45,31 @@
 
         <!-- Action Buttons -->
         <ng-container hero-actions>
-            <app-favorites-button
-                [itemId]="serial.id"
-                [item]="serial"
-            />
+            @if (quickStartAction(); as action) {
+                <button
+                    class="play-btn"
+                    data-testid="series-quick-start"
+                    (click)="playQuickStartEpisode()"
+                    [disabled]="action.disabled"
+                >
+                    <span class="play-btn__icon-shell" aria-hidden="true">
+                        <mat-icon class="play-btn__icon">{{
+                            action.icon
+                        }}</mat-icon>
+                    </span>
+                    <span class="play-btn__copy">
+                        <span class="play-btn__label">
+                            {{ action.labelKey | translate }}
+                        </span>
+                        @if (action.episodeLabel) {
+                            <span class="play-btn__meta">
+                                {{ action.episodeLabel }}
+                            </span>
+                        }
+                    </span>
+                </button>
+            }
+            <app-favorites-button [itemId]="serial.id" [item]="serial" />
         </ng-container>
 
         @if (inlinePlayback(); as playback) {
@@ -63,6 +78,9 @@
                 (timeUpdate)="handleInlineTimeUpdate($event)"
                 (closed)="closeInlinePlayer()"
                 (streamUrlCopied)="showCopyNotification()"
+                (externalFallbackRequested)="
+                    handleExternalFallbackRequest($event)
+                "
             />
         }
 
@@ -72,19 +90,20 @@
                 [seasons]="mappedSeasons()"
                 [seriesId]="toSeriesId(serial.id)"
                 [playlistId]="stalkerStore.currentPlaylist()?._id ?? ''"
-                [seriesTitle]="serial.info?.name"
+                [seriesTitle]="serial.info.name"
                 [playbackPositions]="episodePlaybackPositions()"
                 [openingEpisodeId]="openingEpisodeId()"
                 [activeEpisodeId]="activeEpisodeId()"
                 [isLoading]="
                     isVodSeriesSeasonsLoading() ||
-                    (seasonContainer?.selectedSeason &&
-                        isCurrentSeasonLoading(seasonContainer.selectedSeason))
+                    isCurrentSeasonLoading(seasonContainer?.selectedSeason)
                 "
                 (seasonSelected)="onSeasonSelected($event)"
                 (episodeClicked)="onEpisodeClicked($event)"
                 (episodeDownloadRequested)="downloadEpisode($event)"
-                (playbackToggleRequested)="handlePlaybackToggleRequested($event)"
+                (playbackToggleRequested)="
+                    handlePlaybackToggleRequested($event)
+                "
                 #seasonContainer
             />
         }

@@ -14,22 +14,24 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { MatTooltip } from '@angular/material/tooltip';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslatePipe, TranslateService } from '@ngx-translate/core';
-import { DialogService } from 'components';
-import { firstValueFrom, map } from 'rxjs';
+import { DialogService } from '@iptvnator/ui/components';
+import { firstValueFrom, map, startWith } from 'rxjs';
 import {
     DatabaseService,
     type DownloadItem,
     DownloadsService,
     PlaylistsService,
-} from 'services';
+} from '@iptvnator/services';
+import { EmptyStateComponent } from '@iptvnator/playlist/shared/ui';
 import { queryParamSignal } from '@iptvnator/portal/shared/util';
 import { createPortalCollectionContext } from '@iptvnator/portal/shared/util';
 import {
     buildStandardCollectionCategories,
     filterCollectionBucket,
+    PORTAL_SHELL_ACTIONS,
 } from '@iptvnator/portal/shared/util';
 import { PortalCollectionContextService } from '@iptvnator/portal/shared/util';
-import { Playlist } from 'shared-interfaces';
+import { Playlist } from '@iptvnator/shared/interfaces';
 
 type PortalSource = 'xtream' | 'stalker';
 const DOWNLOAD_COLLECTION_LABELS = {
@@ -48,6 +50,7 @@ const DOWNLOAD_COLLECTION_LABELS = {
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [
+        EmptyStateComponent,
         MatButtonModule,
         MatIcon,
         MatProgressBarModule,
@@ -64,12 +67,14 @@ export class DownloadsComponent {
     private readonly dialogService = inject(DialogService);
     private readonly translate = inject(TranslateService);
     private readonly snackBar = inject(MatSnackBar);
+    private readonly shellActions = inject(PORTAL_SHELL_ACTIONS);
     readonly downloadsService = inject(DownloadsService);
 
     readonly downloads = this.downloadsService.downloads;
     readonly downloadFolder = this.downloadsService.downloadFolder;
     readonly isAvailable = this.downloadsService.isAvailable;
-    readonly hasDownloads = this.downloadsService.hasDownloads;
+    readonly isLoadingDownloads = this.downloadsService.isLoadingDownloads;
+    readonly hasLoadedDownloads = this.downloadsService.hasLoadedDownloads;
     readonly activeCount = this.downloadsService.activeCount;
     readonly playlistId = toSignal(
         this.route.paramMap.pipe(map((params) => params.get('id') ?? '')),
@@ -78,9 +83,34 @@ export class DownloadsComponent {
     readonly searchTerm = queryParamSignal(this.route, 'q', (value) =>
         (value ?? '').trim().toLowerCase()
     );
-    readonly playlists = toSignal(this.playlistsService.getAllPlaylists(), {
-        initialValue: [] as Playlist[],
-    });
+    readonly playlists = toSignal(
+        this.playlistsService.getAllPlaylists().pipe(startWith(null)),
+        {
+            initialValue: null as Playlist[] | null,
+        }
+    );
+    readonly playlistsLoaded = computed(() => this.playlists() !== null);
+    readonly playlistItems = computed(() => this.playlists() ?? []);
+    readonly hasNoPlaylists = computed(
+        () => this.playlistsLoaded() && this.playlistItems().length === 0
+    );
+    readonly skeletonItems = Array.from({ length: 6 }, (_, index) => index);
+    readonly skeletonActionSlots = Array.from(
+        { length: 4 },
+        (_, index) => index
+    );
+
+    addPlaylist(): void {
+        this.shellActions.openAddPlaylistDialog();
+    }
+
+    goToSources(): void {
+        void this.router.navigate(['/workspace', 'sources']);
+    }
+
+    goToDashboard(): void {
+        void this.router.navigate(['/workspace', 'dashboard']);
+    }
 
     readonly scopedDownloads = computed(() => {
         const playlistId = this.playlistId();
@@ -89,6 +119,14 @@ export class DownloadsComponent {
             ? downloads.filter((item) => item.playlistId === playlistId)
             : downloads;
     });
+    readonly hasScopedDownloads = computed(
+        () => this.scopedDownloads().length > 0
+    );
+    readonly showDownloadSkeleton = computed(
+        () =>
+            !this.hasScopedDownloads() &&
+            (!this.hasLoadedDownloads() || this.isLoadingDownloads())
+    );
 
     readonly categories = computed(() => {
         const downloads = this.scopedDownloads();
@@ -148,7 +186,7 @@ export class DownloadsComponent {
         )
     );
     readonly availablePlaylistIds = computed(
-        () => new Set(this.playlists().map((playlist) => playlist._id))
+        () => new Set(this.playlistItems().map((playlist) => playlist._id))
     );
 
     constructor() {
@@ -243,7 +281,9 @@ export class DownloadsComponent {
 
     async reveal(item: DownloadItem) {
         if (item.filePath) {
-            const result = await this.downloadsService.revealFile(item.filePath);
+            const result = await this.downloadsService.revealFile(
+                item.filePath
+            );
             if (!result.success) {
                 this.handleFileActionError(result.error);
             }
@@ -277,7 +317,10 @@ export class DownloadsComponent {
     }
 
     hasPoster(item: DownloadItem): boolean {
-        return !!item.posterUrl && !this.failedPosterKeys()[this.getPosterKey(item)];
+        return (
+            !!item.posterUrl &&
+            !this.failedPosterKeys()[this.getPosterKey(item)]
+        );
     }
 
     markPosterFailed(item: DownloadItem): void {

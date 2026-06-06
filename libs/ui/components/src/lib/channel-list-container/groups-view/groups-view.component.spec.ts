@@ -3,7 +3,7 @@ import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { MatDialog } from '@angular/material/dialog';
 import { TranslateModule } from '@ngx-translate/core';
 import { of } from 'rxjs';
-import { Channel } from 'shared-interfaces';
+import { Channel } from '@iptvnator/shared/interfaces';
 import { ChannelDetailsDialogComponent } from '../channel-details-dialog/channel-details-dialog.component';
 import { GroupManagementDialogComponent } from './group-management-dialog/group-management-dialog.component';
 import { GroupsViewComponent } from './groups-view.component';
@@ -162,6 +162,10 @@ describe('GroupsViewComponent', () => {
         fixture.componentRef.setInput('searchTerm', overrides.searchTerm ?? '');
         fixture.componentRef.setInput('channelEpgMap', new Map<string, null>());
         fixture.componentRef.setInput(
+            'channelIconMap',
+            new Map<string, string>()
+        );
+        fixture.componentRef.setInput(
             'progressTick',
             overrides.progressTick ?? 0
         );
@@ -204,9 +208,9 @@ describe('GroupsViewComponent', () => {
         ]);
     });
 
-    it('defaults to server order when no saved sort mode exists', () => {
+    it('defaults to playlist order when no saved sort mode exists', () => {
         expect(component.groupChannelSortMode()).toBe('server');
-        expect(component.groupChannelSortLabel()).toBe('Server Order');
+        expect(component.groupChannelSortLabel()).toBe('Playlist Order');
     });
 
     it('restores a saved valid sort mode and ignores invalid stored values', () => {
@@ -224,6 +228,33 @@ describe('GroupsViewComponent', () => {
         expect(component.groupChannelSortMode()).toBe('server');
     });
 
+    it('falls back to an EPG icon for grouped channels without a playlist logo', () => {
+        const channelWithoutLogo = {
+            ...sportsCenter,
+            tvg: {
+                ...sportsCenter.tvg,
+                logo: '',
+            },
+        };
+
+        setInputs({
+            groupedChannels: {
+                Sports: [channelWithoutLogo],
+            },
+        });
+        fixture.componentRef.setInput(
+            'channelIconMap',
+            new Map([
+                [channelWithoutLogo.tvg.id, 'https://example.com/sports.png'],
+            ])
+        );
+        fixture.detectChanges();
+
+        expect(
+            component.getLogoForChannel(component.selectedGroupChannels()[0])
+        ).toBe('https://example.com/sports.png');
+    });
+
     it('persists sort mode changes', () => {
         component.setGroupChannelSortMode('name-desc');
 
@@ -233,7 +264,7 @@ describe('GroupsViewComponent', () => {
         );
     });
 
-    it('sorts selected group channels by server order, name ascending, and name descending', () => {
+    it('sorts selected group channels by playlist order, name ascending, and name descending', () => {
         const alphaSignal = createChannel(
             'sort-1',
             'Alpha Signal',
@@ -281,6 +312,32 @@ describe('GroupsViewComponent', () => {
 
         expect(component.selectedGroupKey()).toBe('News');
         expect(component.selectedGroup()?.key).toBe('News');
+    });
+
+    it('keeps the first grouped-channel match for duplicate active channel URLs', () => {
+        const movieMirror = createChannel(
+            'mirror-1',
+            'Movie Mirror',
+            'http://example.com/shared-stream.m3u8',
+            'Movies'
+        );
+        const sportsMirror = createChannel(
+            'mirror-2',
+            'Sports Mirror',
+            'http://example.com/shared-stream.m3u8',
+            'Sports'
+        );
+
+        setInputs({
+            activeChannelUrl: 'http://example.com/shared-stream.m3u8',
+            groupedChannels: {
+                Movies: [movieMirror],
+                Sports: [sportsMirror],
+            },
+        });
+
+        expect(component.activeChannelGroupKey()).toBe('Movies');
+        expect(component.selectedGroupKey()).toBe('Movies');
     });
 
     it('retains a visible manual selection and falls back to the first visible group', () => {

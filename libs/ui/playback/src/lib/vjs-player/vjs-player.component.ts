@@ -1,22 +1,29 @@
 import {
     Component,
     ElementRef,
-    EventEmitter,
-    Input,
     OnChanges,
     OnDestroy,
     OnInit,
-    Output,
     SimpleChanges,
-    ViewChild,
     ViewEncapsulation,
+    input,
+    output,
+    viewChild,
 } from '@angular/core';
 import '@yangkghjh/videojs-aspect-ratio-panel';
-import { getExtensionFromUrl } from 'm3u-utils';
 import mpegts from 'mpegts.js';
+import { createDevLogger } from '@iptvnator/shared/interfaces';
 import videoJs from 'video.js';
 import 'videojs-contrib-quality-levels';
 import 'videojs-quality-selector-hls';
+import {
+    InlinePlaybackPlayer,
+    PlaybackDiagnostic,
+    classifyMpegTsPlaybackIssue,
+    classifyNativePlaybackIssue,
+    createPlaybackSourceMetadata,
+    getPlaybackMediaExtensionFromUrl,
+} from '../playback-diagnostics/playback-diagnostics.util';
 
 /**
  * This component contains the implementation of video player that is based on video.js library
@@ -29,6 +36,8 @@ type VideoPlayerSource = {
 
 type VideoPlayerOptions = Record<string, unknown> & {
     autoplay?: boolean;
+    isLive?: boolean;
+    reloadToken?: number;
     sources?: VideoPlayerSource[];
 };
 
@@ -72,12 +81,17 @@ type VideoJsPlayer = Omit<
     ReturnType<typeof videoJs>,
     'audioTracks' | 'tech' | 'getChild'
 > & {
-    qualitySelectorHls?: (options?: { displayCurrentQuality?: boolean }) => void;
+    qualitySelectorHls?: (options?: {
+        displayCurrentQuality?: boolean;
+    }) => void;
     aspectRatioPanel?: () => void;
     audioTracks: () => VideoJsAudioTrackList | null;
     tech: (options?: unknown) => VideoJsTech | null;
     getChild: (name: string) => VideoJsControlChild | null;
+    error: () => { code?: number; message?: string } | null;
 };
+
+const debugVjsPlayer = createDevLogger('VjsPlayer');
 
 @Component({
     selector: 'app-vjs-player',
@@ -88,92 +102,113 @@ type VideoJsPlayer = Omit<
 })
 export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
     /** DOM-element reference */
-    @ViewChild('target', { static: true }) target!: ElementRef<Element>;
+    readonly target = viewChild.required<ElementRef<Element>>('target');
     /** Options of VideoJs player */
-    @Input() options!: VideoPlayerOptions;
+    readonly options = input.required<VideoPlayerOptions>();
     /** VideoJs object */
     player!: VideoJsPlayer;
     /** mpegts.js player for raw MPEG-TS streams */
     private mpegtsPlayer: mpegts.Player | null = null;
-    @Input() volume = 1;
-    @Input() startTime = 0;
-    @Output() timeUpdate = new EventEmitter<{
+    private mpegTsVodDurationTarget: HTMLVideoElement | null = null;
+    private readonly mpegTsVodDurationEvents = [
+        'durationchange',
+        'loadedmetadata',
+        'progress',
+        'timeupdate',
+        'error',
+    ] as const;
+    readonly volume = input(1);
+    readonly startTime = input(0);
+    readonly timeUpdate = output<{
         currentTime: number;
         duration: number;
     }>();
+    readonly playbackIssue = output<PlaybackDiagnostic | null>();
+
+    private readonly clearPlaybackIssue = () => {
+        this.playbackIssue.emit(null);
+    };
+    private readonly scheduleMpegTsVodDurationSync = () => {
+        this.syncMpegTsVodDuration();
+        this.queueDurationSync(() => this.syncMpegTsVodDuration());
+    };
 
     /**
      * Instantiate Video.js on component init
      */
     ngOnInit(): void {
-        const source = this.options?.sources?.[0];
+        const source = this.options().sources?.[0];
         const isMpegTs = this.isMpegTsSource(source?.src);
+        const targetVideo = this.target().nativeElement as HTMLVideoElement;
+        targetVideo.addEventListener('loadeddata', this.clearPlaybackIssue);
+        targetVideo.addEventListener('playing', this.clearPlaybackIssue);
 
         // For raw MPEG-TS streams, init Video.js without a source (UI/controls only)
         const vjsOptions = isMpegTs
-            ? { ...this.options, sources: [], autoplay: false }
-            : { ...this.options, autoplay: true };
+            ? { ...this.options(), sources: [], autoplay: false }
+            : { ...this.options(), autoplay: true };
 
-        this.player = videoJs(
-            this.target.nativeElement,
-            vjsOptions,
-            () => {
-                console.log(
-                    'Setting VideoJS player initial volume to:',
-                    this.volume
-                );
-                this.player.volume(this.volume);
+        this.player = videoJs(this.target().nativeElement, vjsOptions, () => {
+            debugVjsPlayer(
+                'Setting VideoJS player initial volume to:',
+                this.volume()
+            );
+            this.player.volume(this.volume());
 
-                this.player.on('loadedmetadata', () => {
-                    if (this.startTime > 0) {
-                        this.player.currentTime(this.startTime);
-                    }
+            this.player.on('loadedmetadata', () => {
+                if (this.startTime() > 0) {
+                    this.player.currentTime(this.startTime());
+                }
+                this.playbackIssue.emit(null);
+                this.logAudioTracks();
+                this.setupAudioTrackMenu();
+            });
+
+            this.player.on('error', () => {
+                this.handleVideoJsPlaybackError();
+            });
+
+            // Audio tracks may be added after loadedmetadata (e.g. HLS alternate audio)
+            const audioTracks = this.player.audioTracks();
+            if (audioTracks) {
+                audioTracks.addEventListener('addtrack', () => {
+                    debugVjsPlayer(
+                        '[AudioTrack] addtrack event fired, total tracks:',
+                        audioTracks.length
+                    );
                     this.logAudioTracks();
                     this.setupAudioTrackMenu();
                 });
-
-                // Audio tracks may be added after loadedmetadata (e.g. HLS alternate audio)
-                const audioTracks = this.player.audioTracks();
-                if (audioTracks) {
-                    audioTracks.addEventListener('addtrack', () => {
-                        console.log(
-                            '[AudioTrack] addtrack event fired, total tracks:',
-                            this.player.audioTracks().length
-                        );
-                        this.logAudioTracks();
-                        this.setupAudioTrackMenu();
-                    });
-                    audioTracks.addEventListener('removetrack', () => {
-                        console.log(
-                            '[AudioTrack] removetrack event fired, total tracks:',
-                            this.player.audioTracks().length
-                        );
-                        this.logAudioTracks();
-                        this.setupAudioTrackMenu();
-                    });
-                    audioTracks.addEventListener('change', () => {
-                        this.logAudioTracks();
-                    });
-                }
-
-                this.player.on('volumechange', () => {
-                    const currentVolume = this.player.volume();
-                    localStorage.setItem('volume', currentVolume.toString());
+                audioTracks.addEventListener('removetrack', () => {
+                    debugVjsPlayer(
+                        '[AudioTrack] removetrack event fired, total tracks:',
+                        audioTracks.length
+                    );
+                    this.logAudioTracks();
+                    this.setupAudioTrackMenu();
                 });
-
-                this.player.on('timeupdate', () => {
-                    this.timeUpdate.emit({
-                        currentTime: this.player.currentTime(),
-                        duration: this.player.duration(),
-                    });
+                audioTracks.addEventListener('change', () => {
+                    this.logAudioTracks();
                 });
-
-                // Attach mpegts.js after Video.js is ready
-                if (isMpegTs) {
-                    this.initMpegTs(source.src);
-                }
             }
-        ) as unknown as VideoJsPlayer;
+
+            this.player.on('volumechange', () => {
+                const currentVolume = this.player.volume() ?? this.volume();
+                localStorage.setItem('volume', currentVolume.toString());
+            });
+
+            this.player.on('timeupdate', () => {
+                this.timeUpdate.emit({
+                    currentTime: this.player.currentTime() ?? 0,
+                    duration: this.player.duration() ?? 0,
+                });
+            });
+
+            // Attach mpegts.js after Video.js is ready
+            if (isMpegTs && source) {
+                this.initMpegTs(source.src);
+            }
+        }) as unknown as VideoJsPlayer;
         try {
             if (typeof this.player.qualitySelectorHls === 'function') {
                 this.player.qualitySelectorHls({
@@ -198,18 +233,31 @@ export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
      */
     ngOnChanges(changes: SimpleChanges): void {
         if (changes['options']?.previousValue) {
-            const newSource = changes['options'].currentValue.sources[0];
-            if (this.isMpegTsSource(newSource?.src)) {
+            const previousSource =
+                changes['options'].previousValue.sources?.[0];
+            const newSource = changes['options'].currentValue.sources?.[0];
+            if (
+                this.hasPlaybackInputChanged(
+                    changes['options'].previousValue,
+                    changes['options'].currentValue,
+                    previousSource,
+                    newSource
+                )
+            ) {
+                this.playbackIssue.emit(null);
                 this.destroyMpegTs();
-                this.player.reset();
-                this.initMpegTs(newSource.src);
-            } else {
-                this.destroyMpegTs();
-                this.player.src(newSource);
+                if (!newSource) {
+                    this.player.reset();
+                } else if (this.isMpegTsSource(newSource.src)) {
+                    this.player.reset();
+                    this.initMpegTs(newSource.src);
+                } else {
+                    this.player.src(newSource);
+                }
             }
         }
         if (changes['volume']?.currentValue !== undefined && this.player) {
-            console.log(
+            debugVjsPlayer(
                 'Setting VideoJS player volume to:',
                 changes['volume'].currentValue
             );
@@ -222,6 +270,7 @@ export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
      */
     ngOnDestroy(): void {
         this.destroyMpegTs();
+        this.removeNativePlaybackListeners();
         if (this.player) {
             this.player.dispose();
         }
@@ -229,25 +278,183 @@ export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
 
     private isMpegTsSource(url?: string): boolean {
         if (!url) return false;
-        return getExtensionFromUrl(url) === 'ts' && mpegts.isSupported();
+        const extension = getPlaybackMediaExtensionFromUrl(url);
+        return (extension === 'ts' || !extension) && mpegts.isSupported();
+    }
+
+    private hasPlaybackInputChanged(
+        previousOptions: VideoPlayerOptions,
+        newOptions: VideoPlayerOptions,
+        previousSource: VideoPlayerSource | undefined,
+        newSource: VideoPlayerSource | undefined
+    ): boolean {
+        return (
+            previousOptions.reloadToken !== newOptions.reloadToken ||
+            previousSource?.src !== newSource?.src ||
+            previousSource?.type !== newSource?.type
+        );
+    }
+
+    private removeNativePlaybackListeners(): void {
+        try {
+            const targetVideo = this.target().nativeElement as HTMLVideoElement;
+            targetVideo.removeEventListener(
+                'loadeddata',
+                this.clearPlaybackIssue
+            );
+            targetVideo.removeEventListener('playing', this.clearPlaybackIssue);
+        } catch {
+            // Required viewChild can be unavailable when a shallow unit test destroys an unrendered component.
+        }
     }
 
     private initMpegTs(url: string): void {
-        const videoEl = this.player.tech({ IWillNotUseThisInPlugins: true })?.el();
+        const videoEl = this.player
+            .tech({ IWillNotUseThisInPlugins: true })
+            ?.el?.();
         if (!videoEl) return;
 
-        console.log('Using mpegts.js for TS stream:', url);
+        debugVjsPlayer('Using mpegts.js for TS stream:', url);
+        const isLive = this.options().isLive !== false;
         this.mpegtsPlayer = mpegts.createPlayer({
             type: 'mpegts',
-            isLive: true,
+            isLive,
             url: url,
         });
         this.mpegtsPlayer.attachMediaElement(videoEl as HTMLVideoElement);
+        if (!isLive) {
+            this.attachMpegTsVodDurationNormalization(
+                videoEl as HTMLVideoElement
+            );
+        }
+        this.mpegtsPlayer.on(
+            mpegts.Events.ERROR,
+            (type: string, details: string, info: unknown): void => {
+                this.syncMpegTsVodDuration();
+                this.playbackIssue.emit(
+                    classifyMpegTsPlaybackIssue(
+                        {
+                            type,
+                            details,
+                            info,
+                        },
+                        this.createSourceMetadata(url, 'video/mp2t')
+                    )
+                );
+            }
+        );
         this.mpegtsPlayer.load();
         this.mpegtsPlayer.play();
     }
 
+    private handleVideoJsPlaybackError(): void {
+        const source = this.options().sources?.[0];
+        const targetVideo = this.target().nativeElement as HTMLVideoElement;
+        const videoJsError =
+            typeof this.player?.error === 'function'
+                ? this.player.error()
+                : null;
+        const nativeError = targetVideo?.error ?? null;
+
+        this.syncMpegTsVodDuration();
+        this.playbackIssue.emit(
+            classifyNativePlaybackIssue(
+                videoJsError ?? nativeError,
+                this.createSourceMetadata(
+                    source?.src ?? targetVideo?.currentSrc ?? '',
+                    source?.type
+                )
+            )
+        );
+    }
+
+    private attachMpegTsVodDurationNormalization(
+        videoEl: HTMLVideoElement
+    ): void {
+        this.detachMpegTsVodDurationNormalization();
+        this.mpegTsVodDurationTarget = videoEl;
+        for (const eventName of this.mpegTsVodDurationEvents) {
+            videoEl.addEventListener(
+                eventName,
+                this.scheduleMpegTsVodDurationSync
+            );
+        }
+        this.syncMpegTsVodDuration();
+    }
+
+    private detachMpegTsVodDurationNormalization(): void {
+        if (!this.mpegTsVodDurationTarget) {
+            return;
+        }
+
+        for (const eventName of this.mpegTsVodDurationEvents) {
+            this.mpegTsVodDurationTarget.removeEventListener(
+                eventName,
+                this.scheduleMpegTsVodDurationSync
+            );
+        }
+        this.mpegTsVodDurationTarget = null;
+    }
+
+    private syncMpegTsVodDuration(): void {
+        if (this.options().isLive !== false || !this.mpegTsVodDurationTarget) {
+            return;
+        }
+
+        const duration = this.getFiniteMpegTsVodDuration(
+            this.mpegTsVodDurationTarget
+        );
+        if (!duration) {
+            return;
+        }
+
+        if (this.player.duration() !== duration) {
+            this.player.duration(duration);
+        }
+    }
+
+    private getFiniteMpegTsVodDuration(videoEl: HTMLVideoElement): number {
+        return (
+            this.getFiniteTimeRangeEnd(videoEl.seekable) ??
+            this.getFiniteTimeRangeEnd(videoEl.buffered) ??
+            0
+        );
+    }
+
+    private getFiniteTimeRangeEnd(ranges: TimeRanges): number | null {
+        for (let index = ranges.length - 1; index >= 0; index--) {
+            try {
+                const end = ranges.end(index);
+                if (Number.isFinite(end) && end > 0) {
+                    return end;
+                }
+            } catch {
+                continue;
+            }
+        }
+
+        return null;
+    }
+
+    private queueDurationSync(callback: () => void): void {
+        if (typeof queueMicrotask === 'function') {
+            queueMicrotask(callback);
+            return;
+        }
+
+        void Promise.resolve().then(callback);
+    }
+
+    private createSourceMetadata(url: string, mimeType?: string) {
+        return createPlaybackSourceMetadata({
+            url,
+            mimeType,
+            player: InlinePlaybackPlayer.VideoJs,
+        });
+    }
+
     private destroyMpegTs(): void {
+        this.detachMpegTsVodDurationNormalization();
         if (this.mpegtsPlayer) {
             this.mpegtsPlayer.pause();
             this.mpegtsPlayer.unload();
@@ -262,10 +469,17 @@ export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
      */
     private logAudioTracks(): void {
         const audioTracks = this.player.audioTracks();
-        console.log('[AudioTrack] Audio tracks count:', audioTracks?.length ?? 0);
-        for (let i = 0; i < (audioTracks?.length ?? 0); i++) {
+        debugVjsPlayer(
+            '[AudioTrack] Audio tracks count:',
+            audioTracks?.length ?? 0
+        );
+        if (!audioTracks) {
+            return;
+        }
+
+        for (let i = 0; i < audioTracks.length; i++) {
             const t = audioTracks[i];
-            console.log(
+            debugVjsPlayer(
                 `[AudioTrack] Track ${i}: label="${t.label}", language="${t.language}", enabled=${t.enabled}, kind="${t.kind}"`
             );
         }
@@ -280,12 +494,12 @@ export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
             tech?.vhs?.playlists?.master?.mediaGroups?.AUDIO;
 
         if (audioMediaGroups) {
-            console.log(
+            debugVjsPlayer(
                 '[AudioTrack] HLS AUDIO media groups:',
                 JSON.stringify(Object.keys(audioMediaGroups))
             );
         } else {
-            console.log(
+            debugVjsPlayer(
                 '[AudioTrack] HLS AUDIO media groups: none found in playlist metadata'
             );
         }
@@ -298,16 +512,16 @@ export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
      */
     private setupAudioTrackMenu(): void {
         const audioTracks = this.player.audioTracks();
-        console.log(
+        debugVjsPlayer(
             '[AudioTrack] setupAudioTrackMenu called, tracks:',
             audioTracks?.length ?? 0
         );
         if (!audioTracks || audioTracks.length <= 1) {
-            console.log(
+            debugVjsPlayer(
                 '[AudioTrack] Skipping menu: need >1 tracks, have',
                 audioTracks?.length ?? 0
             );
-            console.log(
+            debugVjsPlayer(
                 '[AudioTrack] If VLC/MPV show more tracks, the HLS manifest likely does not expose alternate audio via EXT-X-MEDIA'
             );
             return;
@@ -319,9 +533,9 @@ export class VjsPlayerComponent implements OnInit, OnChanges, OnDestroy {
         }
 
         let audioButton =
-            controlBar.getChild('audioTrackButton') ??
-            controlBar.getChild('AudioTrackButton');
-        if (!audioButton) {
+            controlBar.getChild?.('audioTrackButton') ??
+            controlBar.getChild?.('AudioTrackButton');
+        if (!audioButton && controlBar.addChild) {
             audioButton = controlBar.addChild('audioTrackButton', {});
         }
 

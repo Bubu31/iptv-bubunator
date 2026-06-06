@@ -5,9 +5,11 @@ import {
 } from '@angular/common/http';
 import {
     ApplicationConfig,
+    inject,
     importProvidersFrom,
     provideZoneChangeDetection,
 } from '@angular/core';
+import { MAT_FORM_FIELD_DEFAULT_OPTIONS } from '@angular/material/form-field';
 import { provideAnimations } from '@angular/platform-browser/animations';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideServiceWorker } from '@angular/service-worker';
@@ -17,8 +19,8 @@ import { provideStore } from '@ngrx/store';
 import { provideStoreDevtools } from '@ngrx/store-devtools';
 import { TranslateLoader, TranslateModule } from '@ngx-translate/core';
 import { TranslateHttpLoader } from '@ngx-translate/http-loader';
-import { PlaylistEffects, playlistReducer } from 'm3u-state';
-import { NgxIndexedDBModule, NgxIndexedDBService } from 'ngx-indexed-db';
+import { PlaylistEffects, playlistReducer } from '@iptvnator/m3u-state';
+import { NgxIndexedDBModule } from 'ngx-indexed-db';
 import { NgxSkeletonLoaderModule } from 'ngx-skeleton-loader';
 import {
     PORTAL_EXTERNAL_PLAYBACK,
@@ -26,8 +28,8 @@ import {
 } from '@iptvnator/portal/shared/util';
 import { PLAYLIST_PLAYER_ACTIONS } from '@iptvnator/playlist/shared/util';
 import { provideXtreamDataSource } from '@iptvnator/portal/xtream/data-access';
-import { DataService } from 'services';
-import { dbConfig } from 'shared-interfaces';
+import { DataService } from '@iptvnator/services';
+import { dbConfig } from '@iptvnator/shared/interfaces';
 import { AppConfig } from '../environments/environment';
 import { routes } from './app.routes';
 import { ElectronService } from './services/electron.service';
@@ -39,6 +41,7 @@ import {
 } from './services/portal-navigation-actions.service';
 import { providePortalPlaybackPositions } from './services/portal-playback-positions.service';
 import { PwaService } from './services/pwa.service';
+import { shouldEnableServiceWorker } from './services/runtime-config';
 import { provideWorkspaceShellActions } from './services/workspace-shell-actions.service';
 
 // AoT requires an exported function for factories
@@ -47,13 +50,55 @@ export function HttpLoaderFactory(http: HttpClient): TranslateHttpLoader {
 }
 
 /**
+ * Synchronously read the user's preferred language from localStorage so the
+ * very first render uses the right locale instead of flashing English first
+ * and re-rendering once the IDB-backed settings finish loading.
+ *
+ * The hint is written by AppComponent.initSettings() whenever the saved
+ * settings resolve, so first-ever boots fall back to English (no hint
+ * present yet) and every subsequent boot uses the saved language.
+ */
+const SUPPORTED_LANGS = new Set([
+    'ar',
+    'ary',
+    'by',
+    'de',
+    'el',
+    'en',
+    'es',
+    'fr',
+    'it',
+    'ja',
+    'ko',
+    'nl',
+    'pl',
+    'pt',
+    'ru',
+    'tr',
+    'zh',
+    'zhtw',
+]);
+export const PREFERRED_LANGUAGE_STORAGE_KEY = 'iptvnator:preferred-language';
+export function getInitialLanguage(): string {
+    try {
+        const saved = localStorage.getItem(PREFERRED_LANGUAGE_STORAGE_KEY);
+        if (saved && SUPPORTED_LANGS.has(saved)) {
+            return saved;
+        }
+    } catch {
+        // localStorage may throw in privacy modes; fall through to default.
+    }
+    return 'en';
+}
+
+/**
  * Conditionally provides the necessary service based on the current environment
  */
 export function DataFactory() {
     if (window.electron) {
-        return new ElectronService();
+        return inject(ElectronService);
     }
-    return new PwaService();
+    return inject(PwaService);
 }
 
 export const appConfig: ApplicationConfig = {
@@ -68,24 +113,19 @@ export const appConfig: ApplicationConfig = {
         }),
         provideEffects([PlaylistEffects]),
         provideRouterStore(),
-        provideStoreDevtools({
-            maxAge: 25,
-            logOnly: AppConfig.production,
-        }),
+        ...(AppConfig.production ? [] : [provideStoreDevtools({ maxAge: 25 })]),
         provideServiceWorker('ngsw-worker.js', {
-            enabled: AppConfig.production && !!window.electron,
+            enabled: shouldEnableServiceWorker(),
             registrationStrategy: 'registerWhenStable:30000',
         }),
         importProvidersFrom(
-            AppConfig.environment === 'WEB'
-                ? NgxIndexedDBModule.forRoot(dbConfig)
-                : [],
             NgxIndexedDBModule.forRoot(dbConfig),
             NgxSkeletonLoaderModule.forRoot({
                 animation: 'pulse',
                 loadingText: 'This item is actually loading...',
             }),
             TranslateModule.forRoot({
+                defaultLanguage: getInitialLanguage(),
                 loader: {
                     provide: TranslateLoader,
                     useFactory: HttpLoaderFactory,
@@ -96,7 +136,6 @@ export const appConfig: ApplicationConfig = {
         {
             provide: DataService,
             useFactory: DataFactory,
-            deps: [NgxIndexedDBService, HttpClient],
         },
         {
             provide: PORTAL_PLAYER,
@@ -114,5 +153,9 @@ export const appConfig: ApplicationConfig = {
         },
         ...provideWorkspaceShellActions(),
         ...provideXtreamDataSource(),
+        {
+            provide: MAT_FORM_FIELD_DEFAULT_OPTIONS,
+            useValue: { appearance: 'outline', subscriptSizing: 'dynamic' },
+        },
     ],
 };

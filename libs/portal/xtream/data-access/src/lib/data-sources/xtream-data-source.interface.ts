@@ -1,12 +1,13 @@
 import { InjectionToken } from '@angular/core';
 import {
     PlaybackPositionData,
+    XtreamPendingRestoreState,
     XtreamCategory,
     XtreamLiveStream,
     XtreamSerieItem,
     XtreamVodStream,
-} from 'shared-interfaces';
-import type { DbOperationEvent } from 'services';
+} from '@iptvnator/shared/interfaces';
+import type { DbOperationEvent } from '@iptvnator/services';
 import {
     CategoryType,
     StreamType,
@@ -31,6 +32,7 @@ export interface XtreamPlaylistData {
     userAgent?: string;
     referrer?: string;
     origin?: string;
+    serverTimezone?: string;
 }
 
 /**
@@ -45,6 +47,7 @@ export interface XtreamContentItem {
     rating: string;
     added: string;
     poster_url: string;
+    backdrop_url?: string | null;
     epg_channel_id?: string | null;
     tv_archive?: number | null;
     tv_archive_duration?: number | null;
@@ -53,6 +56,7 @@ export interface XtreamContentItem {
     type: string;
     added_at?: string;
     viewed_at?: string;
+    position?: number | null;
 
     // XtreamItem compatibility fields (optional for search/navigation)
     num?: number;
@@ -181,6 +185,15 @@ export interface IXtreamDataSource {
     ): Promise<XtreamCategory[] | XtreamCategoryFromDb[]>;
 
     /**
+     * Get persisted categories without contacting the Xtream API.
+     * Electron reads SQLite; PWA has no persisted DB cache and returns [].
+     */
+    getCachedCategories(
+        playlistId: string,
+        type: CategoryType
+    ): Promise<XtreamCategoryFromDb[]>;
+
+    /**
      * Get all categories including hidden (for management)
      */
     getAllCategories(
@@ -237,6 +250,15 @@ export interface IXtreamDataSource {
     >;
 
     /**
+     * Get persisted content without contacting the Xtream API.
+     * Electron reads SQLite; PWA has no persisted DB cache and returns [].
+     */
+    getCachedContent(
+        playlistId: string,
+        type: StreamType
+    ): Promise<XtreamContentItem[]>;
+
+    /**
      * Save content in bulk
      */
     saveContent(
@@ -275,9 +297,16 @@ export interface IXtreamDataSource {
     getFavorites(playlistId: string): Promise<XtreamContentItem[]>;
 
     /**
-     * Add content to favorites
+     * Add content to favorites.
+     * @param backdropUrl optionally persisted to `content.backdrop_url` when
+     * the row doesn't already have one. Enables the dashboard hero to surface
+     * a cinematic backdrop without a separate round-trip.
      */
-    addFavorite(contentId: number, playlistId: string): Promise<void>;
+    addFavorite(
+        contentId: number,
+        playlistId: string,
+        backdropUrl?: string
+    ): Promise<void>;
 
     /**
      * Remove content from favorites
@@ -299,9 +328,13 @@ export interface IXtreamDataSource {
     getRecentItems(playlistId: string): Promise<XtreamContentItem[]>;
 
     /**
-     * Add item to recently viewed
+     * Add item to recently viewed. See `addFavorite` for `backdropUrl`.
      */
-    addRecentItem(contentId: number, playlistId: string): Promise<void>;
+    addRecentItem(
+        contentId: number,
+        playlistId: string,
+        backdropUrl?: string
+    ): Promise<void>;
 
     /**
      * Remove item from recently viewed
@@ -322,8 +355,19 @@ export interface IXtreamDataSource {
      */
     getContentByXtreamId(
         xtreamId: number,
-        playlistId: string
+        playlistId: string,
+        contentType?: 'live' | 'movie' | 'series'
     ): Promise<XtreamContentItem | null>;
+
+    /**
+     * Persist a backdrop URL for an already-known content item without changing
+     * favorites or recent ordering.
+     */
+    setContentBackdropIfMissing(
+        contentId: number,
+        playlistId: string,
+        backdropUrl: string
+    ): Promise<void>;
 
     // =========================================================================
     // Playback Position Operations
@@ -393,18 +437,16 @@ export interface IXtreamDataSource {
      * Clear all content and categories for a playlist (for refresh)
      * Returns user data (favorites, recently viewed) for restoration
      */
-    clearPlaylistContent(playlistId: string): Promise<{
-        favoritedXtreamIds: number[];
-        recentlyViewedXtreamIds: { xtreamId: number; viewedAt: string }[];
-    }>;
+    clearPlaylistContent(
+        playlistId: string
+    ): Promise<XtreamPendingRestoreState>;
 
     /**
      * Restore user data after refresh
      */
     restoreUserData(
         playlistId: string,
-        favoritedXtreamIds: number[],
-        recentlyViewedXtreamIds: { xtreamId: number; viewedAt: string }[],
+        restoreState: XtreamPendingRestoreState,
         options?: XtreamOperationOptions
     ): Promise<void>;
 }

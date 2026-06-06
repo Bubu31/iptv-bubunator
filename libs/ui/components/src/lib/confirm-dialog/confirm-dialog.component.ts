@@ -6,6 +6,7 @@ import { TranslateModule } from '@ngx-translate/core';
 export interface ConfirmDialogData {
     title: string;
     message: string;
+    width?: string;
     confirmLabel?: string;
     cancelLabel?: string;
     onConfirm: () => void;
@@ -21,10 +22,10 @@ export interface ConfirmDialogData {
             {{ dialogData.message }}
         </mat-dialog-content>
         <mat-dialog-actions align="end">
-            <button mat-button mat-dialog-close cdkFocusInitial color="accent">
+            <button mat-button mat-dialog-close cdkFocusInitial>
                 {{ dialogData.cancelLabel || 'NO' | translate }}
             </button>
-            <button mat-flat-button [mat-dialog-close]="true" color="accent">
+            <button mat-flat-button [mat-dialog-close]="true" color="primary">
                 {{ dialogData.confirmLabel || 'YES' | translate }}
             </button>
         </mat-dialog-actions>

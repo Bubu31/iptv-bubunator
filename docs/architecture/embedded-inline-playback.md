@@ -5,31 +5,81 @@ This document records the current contract for embedded playback in portal detai
 ## Summary
 
 - Embedded web players are `videojs`, `html5`, and `artplayer`.
-- External players are `mpv` and `vlc`.
+- `embedded-mpv` exists as a hidden macOS-only feasibility harness backed by a native `libmpv` addon.
+- Controlled external players are `mpv` and `vlc`.
+- macOS `.app` bundle paths are resolved only for real MPV/VLC apps. IINA may
+  launch through the MPV path field when the user supplies an executable path
+  such as `/Applications/IINA.app/Contents/MacOS/iina-cli`, but IPTVnator
+  controls, position polling, and instance reuse are not guaranteed for IINA.
 - Flatpak launches external players on the host via `flatpak-spawn --host`.
 - Live playback stays inline in dedicated live layouts.
-- VOD and series detail playback now also stays inline on canonical detail surfaces.
-- Material dialog playback remains only as a fallback for older non-detail callers.
+- VOD and series detail playback stays inline on canonical detail, collection,
+  favorites, recent, and search surfaces.
+- Xtream and Stalker series detail heroes expose a quick-start CTA driven by
+  saved episode playback positions.
+- Embedded playback UI is always hosted by the current view. `PlayerService`
+  launches MPV/VLC only and does not open an embedded-player dialog.
+- Browser-player failures are diagnosed client-side and can offer explicit MPV/VLC fallback actions without changing the saved player setting.
 
 ## Scope
 
-The first pass is intentionally limited:
+Inline embedded playback is required for these VOD/series entry points:
 
 - Xtream VOD detail route
 - Xtream series detail route
 - Stalker VOD detail view
 - Stalker series detail view
+- unified favorites collection details
+- unified recently viewed collection details
+- Stalker advanced search result details
 
-Not migrated in this pass:
+Collection/search VOD surfaces that expose embedded playback must host
+`ResolvedPortalPlayback` inline state locally. They must not call
+`PlayerService.openPlayer(...)` or `PlayerService.openResolvedPlayback(...)` to
+create embedded UI.
 
-- Generic non-detail playback entry points that still call `PlayerService.openPlayer(...)`
-- Any collection/search surface that does not host a canonical detail surface of its own
+## Embedded MPV Harness
+
+The repository now contains a first-pass native embedded MPV harness for Electron:
+
+- shared setting id: `embedded-mpv`
+- native addon owner: `/Users/4gray/Code/iptvnator/apps/electron-backend/src/app/services/embedded-mpv-native.service.ts`
+- IPC bridge: `/Users/4gray/Code/iptvnator/apps/electron-backend/src/app/events/embedded-mpv.events.ts`
+- renderer host: `/Users/4gray/Code/iptvnator/libs/ui/playback/src/lib/embedded-mpv-player/embedded-mpv-player.component.ts`
+- native architecture and release-readiness details: `/Users/4gray/Code/iptvnator/docs/architecture/embedded-mpv-native.md`
+
+Current contract:
+
+- macOS only
+- experimental opt-in
+- enabled in local development only when `IPTVNATOR_ENABLE_EMBEDDED_MPV_EXPERIMENT=1`
+- enabled in packaged macOS builds only when the bundled native addon and `vendored-lgpl` libmpv runtime load successfully
+- uses IPTVnator-owned controls and `ResolvedPortalPlayback` payloads
+- uses the libmpv render API on macOS and renders through an IPTVnator-owned native `NSView`
+- defaults to libmpv's OpenGL render backend with `hwdec=auto-safe`
+- keeps the previous software renderer as a debug fallback via `IPTVNATOR_EMBEDDED_MPV_RENDERER=sw`
+- emits lightweight render diagnostics when `IPTVNATOR_TRACE_EMBEDDED_MPV=1` is set
+- exposes an IPTVnator-owned fullscreen button that uses the renderer fullscreen API and resyncs the native MPV view bounds after fullscreen transitions
+- auto-hides IPTVnator-owned controls while playback is active and restores them on pointer/focus interaction
+- exposes audio-track metadata from MPV and switches tracks through the `aid` property without reloading the stream
+- passes VOD/episode resume offsets to MPV through the `loadfile` options map; live catchup URLs are treated as already-positioned streams
+- applies the initial volume during session creation and uses async libmpv control calls after startup
+- VLC remains external-only
+
+Current limitation:
+
+- the current feasibility harness is still experimental and macOS-specific
+- the original macOS `wid` embedding path produced audio with a black video surface inside Electron, so the harness now avoids foreign-window embedding on macOS
+- the OpenGL render path avoids the old per-frame `CGImage` copy path, but it still needs broader interaction, resize, and packaging coverage
+- startup deadlocks seen during early macOS playback bring-up are mitigated, but the feature is still kept behind the explicit experiment flag until more interaction and packaging coverage is proven
+- because of that, the setting is auto-sanitized back to the default inline player unless support detection reports that the experimental runtime is available
+- this follows the rollout gate: keep the native work in-tree, but do not leave it user-facing until playback, resize, focus, and packaging are stable
 
 ## Components
 
 Shared inline player shell:
 
-- `/Users/4gray/Code/iptvnator/libs/ui/components/src/lib/portal-inline-player/portal-inline-player.component.ts`
+- `/Users/4gray/Code/iptvnator/libs/ui/playback/src/lib/portal-inline-player/portal-inline-player.component.ts`
 
 Xtream detail hosts:
 
@@ -38,13 +88,19 @@ Xtream detail hosts:
 
 Stalker detail hosts:
 
-- `/Users/4gray/Code/iptvnator/libs/portal/catalog/feature/src/lib/category-content-view/category-content-view.component.ts`
-- `/Users/4gray/Code/iptvnator/libs/ui/components/src/lib/stalker-series-view/stalker-series-view.component.ts`
+- `/Users/4gray/Code/iptvnator/libs/portal/stalker/feature/src/lib/stalker-catalog-detail/stalker-catalog-detail.component.ts`
+- `/Users/4gray/Code/iptvnator/libs/portal/stalker/feature/src/lib/stalker-series-view/stalker-series-view.component.ts`
+- `/Users/4gray/Code/iptvnator/libs/portal/stalker/feature/src/lib/stalker-collection-detail.component.ts`
+- `/Users/4gray/Code/iptvnator/libs/portal/stalker/feature/src/lib/stalker-search/stalker-search.component.ts`
 
-Fallback dialog path:
+Embedded playback does not have a fallback dialog path.
+`PlayerService.openResolvedPlayback(...)` remains the MPV/VLC external launch
+entry point; for embedded players it returns without creating UI.
 
-- `/Users/4gray/Code/iptvnator/apps/web/src/app/services/player.service.ts`
-- `/Users/4gray/Code/iptvnator/libs/portal/xtream/feature/src/lib/player-dialog/player-dialog.component.ts`
+Diagnostics and fallback UI:
+
+- `/Users/4gray/Code/iptvnator/libs/ui/playback/src/lib/playback-diagnostics/playback-diagnostics.util.ts`
+- `/Users/4gray/Code/iptvnator/libs/ui/playback/src/lib/web-player-view/web-player-view.component.ts`
 
 ## Playback Decision Rule
 
@@ -55,7 +111,107 @@ When a detail view starts playback:
 3. If the player is embedded, render the inline player inside the current detail view.
 4. If the player is external, hand the same payload to `PlayerService` for MPV/VLC playback.
 
-The detail host owns inline state. `PlayerService` is no longer the primary owner of UI playback state for canonical VOD/series detail screens.
+The detail or collection/search host owns inline state. `PlayerService` is not
+an owner of embedded UI playback state.
+
+## Series Quick Start CTA
+
+Xtream and Stalker series detail views share the quick-start decision helper in
+`libs/portal/shared/util/src/lib/series-quick-start.ts`.
+The helper flattens the loaded season/episode map, sorts seasons and episodes in
+natural order, and returns the hero CTA state.
+
+Current contract:
+
+- the CTA shows the action label plus a compact episode target such as
+  `S01E02 · Episode title`
+- if an episode is in progress, resume the latest updated in-progress episode
+  with its saved offset
+- if no episode is in progress, play the first unwatched episode in season order
+- if watched episodes end at a season boundary, play the first episode of the
+  next loaded season
+- if every loaded episode is watched, render a disabled completed state
+
+The click path must continue through each detail host's normal episode playback
+method so recent-item updates, inline/external player selection, resume offsets,
+and playback-position saving keep the same behavior as manual episode clicks.
+
+## Codec And Container Diagnostics
+
+The shared `WebPlayerViewComponent` is the central browser-player viewport for M3U, Xtream, and Stalker inline playback, including live streams opened from favorites and recently viewed collections. Video.js, HTML5, and ArtPlayer report native media errors, HLS.js errors, mpegts.js errors, and HLS manifest codec metadata into the shared diagnostics classifier.
+
+The diagnostics remain client-only:
+
+- no ffprobe or server-side probing
+- no extra manifest fetch beyond the active player
+- no automatic failover to an external player
+- no embedded MPV macOS diagnostics
+
+Supported diagnostic codes are:
+
+- `unsupported-container`
+- `unsupported-codec`
+- `media-decode-error`
+- `network-error`
+- `browser-access-error`
+- `drm-or-encryption`
+- `unknown-playback-error`
+
+`network-error` is reserved for provider/network loading failures. Browser security failures such as CORS, mixed content, Content Security Policy, and private-network-access blocks are classified as `browser-access-error` so the UI can explain that the browser player was blocked before playback reached decoding.
+
+mpegts.js `Early-EOF` failures on MPEG-TS streams are classified as `media-decode-error` instead of generic `network-error`. These failures usually mean the fetch stream ended before mpegts.js expected a complete transport stream, and external players may still handle the same URL more tolerant of short reads or malformed TS boundaries.
+
+The diagnostic surface covers the inline player viewport when playback fails, with a compact warning badge, a native-player fallback headline, and player-card actions for configured external players. It exposes technical details on demand: diagnostic code, reporting player/source, detected container/MIME, video/audio codecs, native browser error fields, and raw HLS/mpegts details. HLS manifest codec metadata also drives a concise browser-support hint for codecs that Chromium/Electron commonly cannot decode inline, such as HEVC, AC-3, E-AC-3, DTS, and MPEG-2 video.
+
+URL extension metadata is filtered before diagnostics and player selection use it. Web script extensions such as `.php` are not shown as stream containers; explicit media query metadata such as `extension=ts` or `format=m3u8` is preferred when present.
+
+Portal VOD and episode payloads with `contentInfo` are treated as non-live by the Video.js MPEG-TS path unless `isLive` is explicitly set. If Chromium leaves the underlying MediaSource duration at `Infinity` for a finite TS VOD, the Video.js wrapper normalizes its UI duration from the finite `seekable` or `buffered` range. This removes the misleading `LIVE` control state without changing stream decoding, diagnostics, or external fallback behavior.
+
+When a diagnostic is actionable in Electron, the diagnostic surface may offer `Open in MPV`, `Open in VLC`, `Copy URL`, technical details, and `Retry`. Web builds only expose copy/help text and retry. MPV/VLC fallback requests carry the original `ResolvedPortalPlayback` payload so headers, referer, origin, user-agent, content metadata, and resume offset stay intact. Retry clears the current diagnostic and rebuilds the active inline player inputs; it does not change the saved player setting.
+
+`PortalPlayer.openExternalPlayback(playback, player)` is the forced external launch API. It sends the playback payload to MPV or VLC regardless of the current saved player setting, so fallback buttons do not mutate preferences.
+
+## External Player Arguments
+
+Electron settings expose optional MPV and VLC command-line argument fields only
+when the corresponding external player is selected. The executable path remains a
+path-only setting; extra flags are stored separately as `mpvPlayerArguments` and
+`vlcPlayerArguments`.
+
+Argument fields are line-oriented: one non-empty trimmed line becomes one argv
+entry. IPTVnator prepends those custom entries before its stream-specific runtime
+arguments, then keeps the stream URL last. This avoids shell parsing, keeps paths
+with spaces safe, and preserves existing settings for users who never configured
+extra arguments.
+
+The arguments apply only when IPTVnator spawns a new external player process. If
+MPV or VLC instance reuse is active and an existing process is reused, subsequent
+streams are loaded through MPV IPC or VLC RC commands and new process arguments
+are not re-applied until a fresh process starts.
+
+## Electron External Player Ownership
+
+External MPV/VLC integration is split across focused main-process modules:
+
+- `apps/electron-backend/src/app/events/player.events.ts` registers IPC handlers
+  and settings updates only.
+- `apps/electron-backend/src/app/events/external-player-launch-context.ts`
+  resolves Flatpak spawning, default executable paths, macOS `.app` bundles,
+  custom argv merging, spawn specs, and reuse decisions.
+- `apps/electron-backend/src/app/events/external-player-playback-request.ts`
+  builds the effective playback request, including Stalker direct-stream fallback
+  metadata and external-player request headers.
+- `apps/electron-backend/src/app/events/external-player-runtime.ts` owns shared
+  session tracking, trace logging, renderer notifications, playback-position
+  forwarding, and user-facing start errors.
+- `apps/electron-backend/src/app/events/mpv-session.service.ts` owns MPV process,
+  socket, reuse, cleanup, and progress polling lifecycle.
+- `apps/electron-backend/src/app/events/vlc-session.service.ts` owns VLC process,
+  RC interface, reuse, cleanup, command parsing, and progress polling lifecycle.
+
+Keep player-specific process state in the MPV/VLC session modules. Shared spawn,
+request-header, session-registry, and notification helpers belong in the
+`external-player-*` modules so IPC registration stays small and reviewable.
 
 ## Flatpak External Players
 
@@ -67,6 +223,7 @@ Current contract:
 - AppImage, deb/rpm, snap, macOS, and Windows keep the existing direct process spawn flow.
 - VLC keeps the current external-session flow in Flatpak, including the RC port used for progress polling.
 - MPV is intentionally reduced in Flatpak: the app does not reuse an existing MPV instance there and does not open the Unix socket bridge used for non-Flatpak progress polling.
+- VLC instance reuse is also gated off in Flatpak. Outside Flatpak the user can opt in via the "Reuse VLC instance" setting; the app then keeps a single tracked VLC process and drives subsequent stream loads through its RC interface (`clear` + `add <url> :http-*`) instead of spawning a new window per click.
 
 This keeps non-Flatpak behavior unchanged while allowing Flatpak builds to open host-installed external players.
 
@@ -106,18 +263,20 @@ Stalker previously resolved playback and opened UI in the same method.
 Current contract:
 
 - `resolveVodPlayback(...)` returns a `ResolvedPortalPlayback`
-- `createLinkToPlayVod(...)` remains as a compatibility wrapper for untouched callers
-- canonical Stalker detail views use the resolver directly and decide inline vs external locally
+- `createLinkToPlayVod(...)` remains as a compatibility API but collection,
+  search, and canonical detail views use the resolver directly
+- Stalker detail, collection, and search views decide inline vs external locally
 
 This keeps:
 
 - inline/store-state detail navigation intact
 - series and VOD-as-series support intact
-- non-detail callers working until they are migrated
+- external MPV/VLC launches unchanged
 
 ## Playback Position Saving
 
-The old dialog path saved playback positions from inside `PlayerDialogComponent`.
+The old dialog path saved playback positions from inside the removed Xtream
+player dialog.
 
 The new contract is:
 
@@ -129,7 +288,7 @@ This avoids coupling inline UI state to a global dialog.
 
 ## Future Migration Rule
 
-If a non-detail surface is converted away from dialog playback:
+If a non-detail surface needs embedded playback:
 
 - give that surface a canonical inline host
 - switch it to `ResolvedPortalPlayback`

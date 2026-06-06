@@ -1,4 +1,11 @@
-import { Component, computed, inject, OnInit, signal } from '@angular/core';
+import {
+    ChangeDetectionStrategy,
+    Component,
+    computed,
+    inject,
+    OnInit,
+    signal,
+} from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import {
@@ -10,7 +17,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslatePipe } from '@ngx-translate/core';
-import { DatabaseService, XCategoryFromDb } from 'services';
+import { DatabaseService, XCategoryFromDb } from '@iptvnator/services';
 import { createLogger } from '@iptvnator/portal/shared/util';
 
 export interface CategoryManagementDialogData {
@@ -35,6 +42,7 @@ interface CategoryWithSelection extends XCategoryFromDb {
     ],
     templateUrl: './category-management-dialog.component.html',
     styleUrl: './category-management-dialog.component.scss',
+    changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class CategoryManagementDialogComponent implements OnInit {
     private readonly dbService = inject(DatabaseService);

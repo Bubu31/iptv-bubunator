@@ -25,15 +25,22 @@ import {
     StalkerSelectedVodItem,
     toggleStalkerVodFavorite,
 } from '@iptvnator/portal/stalker/data-access';
-import { VodDetailsComponent } from '@iptvnator/ui/playback';
-import { DownloadsService, PlaylistsService } from 'services';
+import {
+    type PlaybackFallbackRequest,
+    VodDetailsComponent,
+} from '@iptvnator/ui/playback';
+import {
+    DownloadsService,
+    PlaybackPositionRuntimeBridgeService,
+    PlaylistsService,
+} from '@iptvnator/services';
 import {
     createStalkerVodItem,
     PlaybackPositionData,
     ResolvedPortalPlayback,
     StalkerVodDetails,
     VodDetailsItem,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import { StalkerCatalogFacadeService } from '../stalker-catalog-facade.service';
 import { StalkerSeriesViewComponent } from '../stalker-series-view/stalker-series-view.component';
 
@@ -65,6 +72,9 @@ export class StalkerCatalogDetailComponent implements OnDestroy {
     private readonly catalog = inject(StalkerCatalogFacadeService);
     private readonly playbackPositions = inject(PORTAL_PLAYBACK_POSITIONS);
     private readonly portalPlayer = inject(PORTAL_PLAYER);
+    private readonly playbackPositionBridge = inject(
+        PlaybackPositionRuntimeBridgeService
+    );
     private readonly router = inject(Router);
     readonly externalPlayback = inject(PORTAL_EXTERNAL_PLAYBACK);
     private readonly snackBar = inject(MatSnackBar);
@@ -91,9 +101,9 @@ export class StalkerCatalogDetailComponent implements OnDestroy {
         const item = this.selectedItem();
         return Boolean(
             item &&
-                (this.contentType() === 'series' ||
-                    item.is_series === true ||
-                    String(item.is_series) === '1')
+            (this.contentType() === 'series' ||
+                item.is_series === true ||
+                String(item.is_series) === '1')
         );
     });
 
@@ -150,23 +160,21 @@ export class StalkerCatalogDetailComponent implements OnDestroy {
             this.closeInlinePlayer();
         });
 
-        if (window.electron?.onPlaybackPositionUpdate) {
-            this.unsubscribePositionUpdates =
-                window.electron.onPlaybackPositionUpdate(
-                    (data: PlaybackPositionData) => {
-                        const currentItem = this.selectedItem();
-                        if (
-                            data.contentType !== 'vod' ||
-                            data.playlistId !== this.catalog.playlist()?.id ||
-                            data.contentXtreamId !== Number(currentItem?.id)
-                        ) {
-                            return;
-                        }
-
-                        this.selectedVodPosition.set(data);
+        this.unsubscribePositionUpdates =
+            this.playbackPositionBridge.onPlaybackPositionUpdate(
+                (data: PlaybackPositionData) => {
+                    const currentItem = this.selectedItem();
+                    if (
+                        data.contentType !== 'vod' ||
+                        data.playlistId !== this.catalog.playlist()?.id ||
+                        data.contentXtreamId !== Number(currentItem?.id)
+                    ) {
+                        return;
                     }
-                );
-        }
+
+                    this.selectedVodPosition.set(data);
+                }
+            ) ?? null;
     }
 
     onVodPlay(item: VodDetailsItem): void {
@@ -254,10 +262,17 @@ export class StalkerCatalogDetailComponent implements OnDestroy {
     showCopyNotification(): void {
         this.snackBar.open(
             this.translateService.instant('PORTALS.STREAM_URL_COPIED'),
-            null,
+            undefined,
             {
                 duration: 2000,
             }
+        );
+    }
+
+    handleExternalFallbackRequest(request: PlaybackFallbackRequest): void {
+        void this.portalPlayer.openExternalPlayback(
+            request.playback,
+            request.player
         );
     }
 
@@ -371,7 +386,7 @@ export class StalkerCatalogDetailComponent implements OnDestroy {
                           'PORTALS.CONTENT_NOT_AVAILABLE'
                       )
                     : this.translateService.instant('PORTALS.PLAYBACK_ERROR');
-            this.snackBar.open(errorMessage, null, {
+            this.snackBar.open(errorMessage, undefined, {
                 duration: 3000,
             });
         }

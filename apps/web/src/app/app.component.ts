@@ -1,15 +1,19 @@
-import { Component, HostBinding, inject, OnInit } from '@angular/core';
+import { Component, effect, HostBinding, inject, OnInit } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router, RouterOutlet } from '@angular/router';
 import { Actions, ofType } from '@ngrx/effects';
 import { Store } from '@ngrx/store';
 import { TranslateService } from '@ngx-translate/core';
-import { EpgService } from '@iptvnator/epg/data-access';
+import { EpgRuntimeBridgeService, EpgService } from '@iptvnator/epg/data-access';
 import { WORKSPACE_SHELL_ACTIONS } from '@iptvnator/workspace/shell/util';
 import { EpgProgressPanelComponent } from '@iptvnator/ui/epg/progress-panel';
-import { PlaylistActions, selectAllPlaylistsMeta } from 'm3u-state';
+import { PlaylistActions, selectAllPlaylistsMeta } from '@iptvnator/m3u-state';
 import { filter, take } from 'rxjs';
-import { DataService } from 'services';
+import {
+    DataService,
+    RuntimeCapabilitiesService,
+    SettingsStore,
+} from '@iptvnator/services';
 import {
     AUTO_UPDATE_PLAYLISTS,
     Language,
@@ -17,8 +21,11 @@ import {
     Settings,
     STORE_KEY,
     Theme,
-} from 'shared-interfaces';
+    createDevLogger,
+} from '@iptvnator/shared/interfaces';
 import { SettingsService } from './services/settings.service';
+
+const debugAppComponent = createDevLogger('AppComponent');
 
 @Component({
     selector: 'app-root',
@@ -27,32 +34,35 @@ import { SettingsService } from './services/settings.service';
 })
 export class AppComponent implements OnInit {
     @HostBinding('class.macos-platform') get isMacOS() {
-        return (
-            window.electron && navigator.platform.toLowerCase().includes('mac')
-        );
+        return this.runtime.isMacOS;
     }
     private actions$ = inject(Actions);
     private dataService = inject(DataService);
+    private epgBridge = inject(EpgRuntimeBridgeService);
     private epgService = inject(EpgService);
     private snackBar = inject(MatSnackBar);
     private router = inject(Router);
     private store = inject(Store);
     private translate = inject(TranslateService);
     private settingsService = inject(SettingsService);
+    private settingsStore = inject(SettingsStore);
+    private runtime = inject(RuntimeCapabilitiesService);
     private readonly workspaceShellActions = inject(WORKSPACE_SHELL_ACTIONS);
 
     /** Default language as fallback */
     private readonly DEFAULT_LANG = Language.ENGLISH;
 
     constructor() {
+        const electronProcess = this.dataService.remote?.process;
         if (
-            ((this.dataService.isElectron &&
-                this.dataService?.remote?.process.platform === 'linux') ||
-                this.dataService?.remote?.process.platform === 'win32') &&
-            this.dataService.remote.process.argv.length > 2
+            this.dataService.isElectron &&
+            electronProcess &&
+            (electronProcess.platform === 'linux' ||
+                electronProcess.platform === 'win32') &&
+            electronProcess.argv.length > 2
         ) {
-            const filePath = this.dataService.remote.process.argv.find(
-                (filepath) =>
+            const filePath = electronProcess.argv.find(
+                (filepath: string) =>
                     filepath.endsWith('.m3u') || filepath.endsWith('.m3u8')
             );
             if (filePath) {
@@ -64,7 +74,12 @@ export class AppComponent implements OnInit {
                 });
             }
         }
-        if (window.electron) {
+        effect(() => {
+            const size = this.settingsStore.coverSize?.() ?? 'medium';
+            document.documentElement.dataset.coverSize = size;
+        });
+
+        if (this.runtime.isElectron) {
             document.addEventListener('keydown', (event) => {
                 if (event.ctrlKey || event.metaKey) {
                     if (event.key === 'f') {
@@ -93,18 +108,31 @@ export class AppComponent implements OnInit {
      */
     initSettings(): void {
         this.settingsService
-            .getValueFromLocalStorage(STORE_KEY.Settings)
+            .getValueFromLocalStorage<Settings>(STORE_KEY.Settings)
             .subscribe((settings: Settings) => {
                 if (settings && Object.keys(settings).length > 0) {
                     // No need to send settings to Electron on init
                     // Settings are stored in IndexedDB and loaded by the settings store
                     // Only specific Electron settings (MPV/VLC paths) are sent when changed in settings component
 
-                    this.translate.use(settings.language ?? this.DEFAULT_LANG);
+                    const resolvedLang = settings.language ?? this.DEFAULT_LANG;
+                    this.translate.use(resolvedLang);
+                    // Mirror the active language to localStorage so the next
+                    // cold start can read it synchronously in app.config.ts's
+                    // getInitialLanguage() and avoid the English-then-localized
+                    // flash for non-English users.
+                    try {
+                        localStorage.setItem(
+                            'iptvnator:preferred-language',
+                            resolvedLang
+                        );
+                    } catch {
+                        // Ignore quota / privacy mode errors.
+                    }
 
                     // Fetch EPG if URLs are configured (only fetch stale data)
                     if (
-                        window.electron &&
+                        this.epgBridge.supportsImport &&
                         settings.epgUrl?.length > 0 &&
                         settings.epgUrl?.some((u) => u !== '')
                     ) {
@@ -142,11 +170,21 @@ export class AppComponent implements OnInit {
      * Data is considered fresh if updated within the last 12 hours.
      */
     private async fetchStaleEpgData(urls: string[]): Promise<void> {
+        if (!this.epgBridge.supportsSourceFreshness) {
+            this.epgService.fetchEpg(urls);
+            return;
+        }
+
         try {
-            const result = await window.electron.checkEpgFreshness(urls, 12);
+            const result = await this.epgBridge.checkFreshness(urls, 12);
+
+            if (!result) {
+                this.epgService.fetchEpg(urls);
+                return;
+            }
 
             if (result.freshUrls.length > 0) {
-                console.log(
+                debugAppComponent(
                     `EPG: ${result.freshUrls.length} source(s) already fresh, skipping fetch`
                 );
                 // Show snackbar if all EPG sources are fresh (no stale URLs)
@@ -160,7 +198,7 @@ export class AppComponent implements OnInit {
             }
 
             if (result.staleUrls.length > 0) {
-                console.log(
+                debugAppComponent(
                     `EPG: Fetching ${result.staleUrls.length} stale source(s)`
                 );
                 this.epgService.fetchEpg(result.staleUrls);
@@ -198,7 +236,7 @@ export class AppComponent implements OnInit {
 
                         // Trigger auto-update if there are playlists to update
                         if (playlistsToUpdate.length > 0) {
-                            console.log(
+                            debugAppComponent(
                                 `Auto-updating ${playlistsToUpdate.length} playlist(s) on startup`
                             );
                             this.dataService.sendIpcEvent(

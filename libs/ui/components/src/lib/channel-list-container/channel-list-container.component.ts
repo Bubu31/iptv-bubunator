@@ -28,17 +28,23 @@ import {
     ChannelActions,
     FavoritesActions,
     PlaylistActions,
+    resolveChannelEpgLookupKey,
     selectActive,
     selectFavorites,
-} from 'm3u-state';
+} from '@iptvnator/m3u-state';
 import {
     BehaviorSubject,
     combineLatest,
     filter,
+    forkJoin,
     firstValueFrom,
     map,
 } from 'rxjs';
-import { PlaylistsService } from 'services';
+import {
+    PlaylistsService,
+    RuntimeCapabilitiesService,
+    SettingsStore,
+} from '@iptvnator/services';
 import {
     Channel,
     EpgProgram,
@@ -48,7 +54,7 @@ import {
     PlaylistRecentlyViewedItem,
     Settings,
     STORE_KEY,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import { AllChannelsViewComponent } from './all-channels-view/all-channels-view.component';
 import { FavoritesViewComponent } from './favorites-view/favorites-view.component';
 import { GroupsViewComponent } from './groups-view/groups-view.component';
@@ -67,6 +73,19 @@ function groupChannelsByTitle(channels: Channel[]): Record<string, Channel[]> {
         groups[key].push(channel);
         return groups;
     }, {});
+}
+
+function mapChannelsByFirstUrl(channels: Channel[]): Map<string, Channel> {
+    const channelsByUrl = new Map<string, Channel>();
+
+    for (const channel of channels) {
+        const channelUrl = channel.url;
+        if (!channelsByUrl.has(channelUrl)) {
+            channelsByUrl.set(channelUrl, channel);
+        }
+    }
+
+    return channelsByUrl;
 }
 
 @Component({
@@ -94,9 +113,12 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
     private readonly router = inject(Router);
     private readonly route = inject(ActivatedRoute);
     private readonly playlistContext = inject(PlaylistContextFacade);
+    private readonly runtime = inject(RuntimeCapabilitiesService);
+    private readonly settingsStore = inject(SettingsStore);
 
     /** Map of channel ID to current EPG program */
     readonly channelEpgMap = signal(new Map<string, EpgProgram | null>());
+    readonly channelIconMap = signal(new Map<string, string>());
 
     /** Interval for refreshing EPG data */
     private epgRefreshInterval?: number;
@@ -109,6 +131,9 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
 
     /** Whether to show EPG data in channel items */
     readonly shouldShowEpg = signal(false);
+    readonly openStreamOnDoubleClick = computed(() =>
+        this.settingsStore.openStreamOnDoubleClick()
+    );
 
     /** Item size for virtual scroll - compact when no EPG */
     readonly itemSize = computed(() => (this.shouldShowEpg() ? 68 : 48));
@@ -120,6 +145,7 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
     readonly sidebarWidth = input<number | null>(null);
     readonly sidebarWidthRequested = output<number>();
     readonly sidebarWidthRequestEnded = output<number>();
+    readonly sidebarToggleRequested = output<void>();
     readonly isWorkspaceLayout = isWorkspaceLayoutRoute(this.route);
     private readonly routeSearchTerm = queryParamSignal(
         this.route,
@@ -171,7 +197,8 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
     }
 
     /** Route-aware playlist ID for recent-item mutations */
-    private readonly resolvedPlaylistId = this.playlistContext.resolvedPlaylistId;
+    private readonly resolvedPlaylistId =
+        this.playlistContext.resolvedPlaylistId;
     private readonly activePlaylist = this.playlistContext.activePlaylist;
 
     readonly hiddenGroupTitles = computed(() => {
@@ -253,11 +280,11 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
         this.channelList$,
     ]).pipe(
         map(([favoriteChannelIds, channelList]) => {
+            const channelsByUrl = mapChannelsByFirstUrl(channelList);
+
             return favoriteChannelIds
                 .map((favoriteChannelId) =>
-                    channelList.find(
-                        (channel) => channel.url === favoriteChannelId
-                    )
+                    channelsByUrl.get(favoriteChannelId)
                 )
                 .filter((channel): channel is Channel => channel !== undefined);
         })
@@ -265,8 +292,7 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
 
     ngOnInit(): void {
         // Check if EPG should be shown (only in Electron with configured EPG URL)
-        const isElectron = !!window['electron'];
-        if (isElectron) {
+        if (this.runtime.supportsEpg) {
             this.storage
                 .get(STORE_KEY.Settings)
                 .subscribe((settings: unknown) => {
@@ -312,18 +338,37 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
      */
     private fetchEpgForChannels(channels: Channel[]): void {
         if (!channels || channels.length === 0) {
+            this.channelEpgMap.set(new Map());
+            this.channelIconMap.set(new Map());
             return;
         }
 
-        const channelIds = channels
-            .map((channel) => channel?.tvg?.id?.trim() || channel?.name?.trim())
-            .filter((id) => !!id);
+        const channelIds = Array.from(
+            new Set(
+                channels
+                    .map((channel) => resolveChannelEpgLookupKey(channel))
+                    .filter((id) => !!id)
+            )
+        );
 
-        this.epgService
-            .getCurrentProgramsForChannels(channelIds)
-            .subscribe((epgMap) => {
-                this.channelEpgMap.set(epgMap);
-            });
+        forkJoin({
+            epgMap: this.epgService.getCurrentProgramsForChannels(channelIds),
+            metadataMap:
+                this.epgService.getChannelMetadataForChannels(channelIds),
+        }).subscribe(({ epgMap, metadataMap }) => {
+            this.channelEpgMap.set(epgMap);
+            this.channelIconMap.set(
+                new Map(
+                    Array.from(
+                        metadataMap.entries(),
+                        ([channelId, metadata]) => [
+                            channelId,
+                            metadata?.iconUrl?.trim() || '',
+                        ]
+                    )
+                )
+            );
+        });
     }
 
     /**
@@ -331,6 +376,15 @@ export class ChannelListContainerComponent implements OnInit, OnDestroy {
      */
     onChannelSelected(channel: Channel): void {
         this.store.dispatch(ChannelActions.setActiveChannel({ channel }));
+    }
+
+    onChannelPlaybackRequested(channel: Channel): void {
+        this.store.dispatch(
+            ChannelActions.setActiveChannel({
+                channel,
+                startPlayback: true,
+            })
+        );
     }
 
     /**

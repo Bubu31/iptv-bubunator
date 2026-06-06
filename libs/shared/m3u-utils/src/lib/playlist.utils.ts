@@ -3,7 +3,7 @@ import {
     ParsedPlaylist,
     ParsedPlaylistItem,
     Playlist,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -13,19 +13,25 @@ import { v4 as uuidv4 } from 'uuid';
  */
 export function aggregateFavoriteChannels(playlists: Playlist[]): Channel[] {
     const favorites: Channel[] = [];
-    playlists.forEach((playlist) => {
-        if (playlist.favorites?.length && playlist.favorites.length > 0) {
-            playlist?.playlist?.items.forEach((channel: Channel) => {
-                if (
-                    playlist.favorites &&
-                    (playlist.favorites.includes(channel.id) ||
-                        playlist.favorites.includes(channel.url))
-                ) {
-                    favorites.push(channel);
-                }
-            });
+
+    for (const playlist of playlists) {
+        const favoriteIds = new Set(
+            (playlist.favorites ?? []).filter(
+                (favorite): favorite is string => typeof favorite === 'string'
+            )
+        );
+
+        if (favoriteIds.size === 0) {
+            continue;
         }
-    });
+
+        for (const channel of playlist.playlist?.items ?? []) {
+            if (favoriteIds.has(channel.id) || favoriteIds.has(channel.url)) {
+                favorites.push(channel);
+            }
+        }
+    }
+
     return favorites;
 }
 
@@ -93,6 +99,38 @@ export const createPlaylistObject = (
     };
 };
 
-export const getExtensionFromUrl = (url: string) => {
-    return url.split(/[#?]/)[0].split('.').pop()?.trim();
+/**
+ * Extract the file extension from a URL, ignoring query strings and fragments.
+ *
+ * Returns `undefined` when no real extension is found — e.g. for IPTV proxy
+ * URLs like `https://proxy.example.com/ace/getstream?infohash=abc` where the
+ * path segment has no dot-separated extension.
+ */
+export const getExtensionFromUrl = (url: string): string | undefined => {
+    const path = url.split(/[#?]/)[0];
+    const lastSegment = path.split('/').pop() || '';
+    const dotIndex = lastSegment.lastIndexOf('.');
+    if (dotIndex < 1) return undefined;
+    const ext = lastSegment.slice(dotIndex + 1).trim();
+    return ext || undefined;
+};
+
+export const getStreamExtensionFromUrl = (url: string): string | undefined => {
+    return getExtensionFromUrlQuery(url) ?? getExtensionFromUrl(url);
+};
+
+const getExtensionFromUrlQuery = (url: string): string | undefined => {
+    try {
+        const parsedUrl = new URL(url, 'http://iptvnator.local');
+        return normalizeExtensionToken(parsedUrl.searchParams.get('extension'));
+    } catch {
+        return undefined;
+    }
+};
+
+const normalizeExtensionToken = (
+    value: string | null | undefined
+): string | undefined => {
+    const extension = value?.trim().replace(/^\.+/, '').toLowerCase();
+    return extension || undefined;
 };

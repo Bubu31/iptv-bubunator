@@ -1,10 +1,15 @@
 import type BetterSqlite3 from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
-import { getIptvnatorDatabasePath } from 'database-path-utils';
-import { SaxesParser, SaxesTagPlain } from 'saxes';
+import { getIptvnatorDatabasePath } from '@iptvnator/shared/database/path-utils';
 import { Readable } from 'stream';
 import { parentPort, workerData } from 'worker_threads';
 import { createGunzip } from 'zlib';
+import {
+    ParsedChannel,
+    ParsedProgram,
+    StreamingEpgParser,
+} from './epg-streaming-parser';
+import { shouldGunzipEpgResponse } from './epg-response-utils';
 import {
     getNativeModuleSearchPaths,
     getWorkerDataNativeModuleSearchPaths,
@@ -37,51 +42,6 @@ function loadBetterSqlite3(): typeof BetterSqlite3 {
 }
 
 Database = loadBetterSqlite3();
-
-/**
- * Internal parsing types with arrays for XML parsing
- * These are different from the flat EpgProgram interface used by the frontend
- */
-interface ParsedTextValue {
-    lang: string;
-    value: string;
-}
-
-interface ParsedIcon {
-    src: string;
-    width?: number;
-    height?: number;
-}
-
-interface ParsedRating {
-    system: string;
-    value: string;
-}
-
-interface ParsedEpisodeNum {
-    system: string;
-    value: string;
-}
-
-interface ParsedChannel {
-    id: string;
-    displayName: ParsedTextValue[];
-    icon: ParsedIcon[];
-    url: string[];
-}
-
-interface ParsedProgram {
-    start: string;
-    stop: string;
-    channel: string;
-    title: ParsedTextValue[];
-    desc: ParsedTextValue[];
-    category: ParsedTextValue[];
-    date: string;
-    episodeNum: ParsedEpisodeNum[];
-    icon: ParsedIcon[];
-    rating: ParsedRating[];
-}
 
 /**
  * Streaming EPG Parser Worker
@@ -169,10 +129,20 @@ class EpgDatabase {
     }
 
     /**
-     * Insert a batch of channels
+     * Insert a batch of channels. When `clearFirst` is true, the existing rows
+     * for `sourceUrl` are deleted inside the same transaction as the insert so
+     * old data is preserved if the fetch/parse never produces any channels.
      */
-    insertChannels(channels: ParsedChannel[], sourceUrl: string): void {
+    insertChannels(
+        channels: ParsedChannel[],
+        sourceUrl: string,
+        clearFirst = false
+    ): void {
         const insertMany = this.db.transaction((channels: ParsedChannel[]) => {
+            if (clearFirst) {
+                this.deleteChannelsStmt.run(sourceUrl);
+                this.knownChannelIds.clear();
+            }
             for (const channel of channels) {
                 const displayName =
                     channel.displayName?.[0]?.value || channel.id;
@@ -244,294 +214,36 @@ class EpgDatabase {
 }
 
 /**
- * Parse XMLTV datetime format to ISO string
- * Format: YYYYMMDDHHmmss +HHMM or YYYYMMDDHHmmss
- */
-function parseXmltvDate(dateStr: string): string {
-    if (!dateStr) return '';
-
-    const match = dateStr.match(
-        /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\s*([+-]\d{4})?$/
-    );
-
-    if (!match) return dateStr;
-
-    const [, year, month, day, hour, minute, second, tz] = match;
-
-    let isoString = `${year}-${month}-${day}T${hour}:${minute}:${second}`;
-
-    if (tz) {
-        isoString += `${tz.slice(0, 3)}:${tz.slice(3)}`;
-    } else {
-        isoString += 'Z';
-    }
-
-    return isoString;
-}
-
-/**
- * Streaming EPG parser using SAX
- */
-class StreamingEpgParser {
-    private parser: SaxesParser;
-    private channels: ParsedChannel[] = [];
-    private programs: ParsedProgram[] = [];
-    private totalChannels = 0;
-    private totalPrograms = 0;
-
-    // Current element being parsed
-    private currentChannel: Partial<ParsedChannel> | null = null;
-    private currentProgram: Partial<ParsedProgram> | null = null;
-    private currentTextContent = '';
-    private currentLang = '';
-
-    // For nested elements
-    private elementStack: string[] = [];
-
-    constructor(
-        private onChannelsBatch: (channels: ParsedChannel[]) => void,
-        private onProgramsBatch: (programs: ParsedProgram[]) => void,
-        private onProgress: (channels: number, programs: number) => void
-    ) {
-        this.parser = new SaxesParser();
-        this.setupParser();
-    }
-
-    private setupParser(): void {
-        this.parser.on('opentag', (tag: SaxesTagPlain) => {
-            this.elementStack.push(tag.name);
-            this.currentTextContent = '';
-
-            switch (tag.name) {
-                case 'channel':
-                    this.currentChannel = {
-                        id: (tag.attributes['id'] as string) || '',
-                        displayName: [],
-                        icon: [],
-                        url: [],
-                    };
-                    break;
-
-                case 'programme':
-                    this.currentProgram = {
-                        start: parseXmltvDate(
-                            (tag.attributes['start'] as string) || ''
-                        ),
-                        stop: parseXmltvDate(
-                            (tag.attributes['stop'] as string) || ''
-                        ),
-                        channel: (tag.attributes['channel'] as string) || '',
-                        title: [],
-                        desc: [],
-                        category: [],
-                        date: '',
-                        episodeNum: [],
-                        icon: [],
-                        rating: [],
-                    };
-                    break;
-
-                case 'icon':
-                    if (this.currentChannel) {
-                        this.currentChannel.icon!.push({
-                            src: (tag.attributes['src'] as string) || '',
-                            width: tag.attributes['width']
-                                ? parseInt(tag.attributes['width'] as string)
-                                : undefined,
-                            height: tag.attributes['height']
-                                ? parseInt(tag.attributes['height'] as string)
-                                : undefined,
-                        });
-                    } else if (this.currentProgram) {
-                        this.currentProgram.icon!.push({
-                            src: (tag.attributes['src'] as string) || '',
-                            width: tag.attributes['width']
-                                ? parseInt(tag.attributes['width'] as string)
-                                : undefined,
-                            height: tag.attributes['height']
-                                ? parseInt(tag.attributes['height'] as string)
-                                : undefined,
-                        });
-                    }
-                    break;
-
-                case 'display-name':
-                case 'title':
-                case 'desc':
-                case 'category':
-                    this.currentLang = (tag.attributes['lang'] as string) || '';
-                    break;
-
-                case 'rating':
-                    if (this.currentProgram) {
-                        const system =
-                            (tag.attributes['system'] as string) || '';
-                        this.currentProgram.rating!.push({ system, value: '' });
-                    }
-                    break;
-
-                case 'episode-num':
-                    if (this.currentProgram) {
-                        const system =
-                            (tag.attributes['system'] as string) || '';
-                        this.currentProgram.episodeNum!.push({
-                            system,
-                            value: '',
-                        });
-                    }
-                    break;
-            }
-        });
-
-        this.parser.on('text', (text: string) => {
-            this.currentTextContent += text;
-        });
-
-        this.parser.on('closetag', (tag: SaxesTagPlain) => {
-            const text = this.currentTextContent.trim();
-
-            if (this.currentChannel) {
-                switch (tag.name) {
-                    case 'display-name':
-                        this.currentChannel.displayName!.push({
-                            lang: this.currentLang,
-                            value: text,
-                        });
-                        break;
-                    case 'url':
-                        if (text) this.currentChannel.url!.push(text);
-                        break;
-                    case 'channel':
-                        this.channels.push(
-                            this.currentChannel as ParsedChannel
-                        );
-                        this.totalChannels++;
-                        this.currentChannel = null;
-
-                        if (this.channels.length >= CHANNEL_BATCH_SIZE) {
-                            this.flushChannels();
-                        }
-                        break;
-                }
-            }
-
-            if (this.currentProgram) {
-                switch (tag.name) {
-                    case 'title':
-                        this.currentProgram.title!.push({
-                            lang: this.currentLang,
-                            value: text,
-                        });
-                        break;
-                    case 'desc':
-                        this.currentProgram.desc!.push({
-                            lang: this.currentLang,
-                            value: text,
-                        });
-                        break;
-                    case 'category':
-                        this.currentProgram.category!.push({
-                            lang: this.currentLang,
-                            value: text,
-                        });
-                        break;
-                    case 'date':
-                        this.currentProgram.date = text;
-                        break;
-                    case 'value':
-                        if (
-                            this.elementStack.includes('rating') &&
-                            this.currentProgram.rating!.length > 0
-                        ) {
-                            this.currentProgram.rating![
-                                this.currentProgram.rating!.length - 1
-                            ].value = text;
-                        }
-                        break;
-                    case 'episode-num':
-                        if (this.currentProgram.episodeNum!.length > 0) {
-                            this.currentProgram.episodeNum![
-                                this.currentProgram.episodeNum!.length - 1
-                            ].value = text;
-                        }
-                        break;
-                    case 'programme':
-                        this.programs.push(
-                            this.currentProgram as ParsedProgram
-                        );
-                        this.totalPrograms++;
-
-                        if (this.programs.length >= PROGRAM_BATCH_SIZE) {
-                            this.flushChannels();
-                            this.flushPrograms();
-                        }
-                        this.currentProgram = null;
-                        break;
-                }
-            }
-
-            this.elementStack.pop();
-            this.currentTextContent = '';
-        });
-
-        this.parser.on('error', (err: Error) => {
-            console.error(loggerLabel, 'Parser error:', err.message);
-        });
-    }
-
-    private flushChannels(): void {
-        if (this.channels.length > 0) {
-            this.onChannelsBatch([...this.channels]);
-            this.channels = [];
-            this.onProgress(this.totalChannels, this.totalPrograms);
-        }
-    }
-
-    private flushPrograms(): void {
-        if (this.programs.length > 0) {
-            this.onProgramsBatch([...this.programs]);
-            this.programs = [];
-            this.onProgress(this.totalChannels, this.totalPrograms);
-        }
-    }
-
-    write(chunk: string): void {
-        this.parser.write(chunk);
-    }
-
-    finish(): { totalChannels: number; totalPrograms: number } {
-        this.parser.close();
-        this.flushChannels();
-        this.flushPrograms();
-
-        return {
-            totalChannels: this.totalChannels,
-            totalPrograms: this.totalPrograms,
-        };
-    }
-}
-
-/**
  * Fetches and parses EPG data from URL using streaming
  * Inserts directly into SQLite to avoid blocking main thread
  */
 async function fetchAndParseEpgStreaming(url: string): Promise<void> {
-    const isGzipped = url.endsWith('.gz');
-
-    console.log(
-        loggerLabel,
-        `Fetching EPG from ${url} (gzipped: ${isGzipped})`
-    );
+    console.log(loggerLabel, `Fetching EPG from ${url}`);
 
     // Create database connection in worker
     const epgDb = new EpgDatabase();
 
-    try {
-        // Clear existing data for this source
-        console.log(loggerLabel, `Clearing existing data for ${url}`);
-        epgDb.clearSourceData(url);
+    // Old rows for this source are retained until the first successful insert
+    // batch arrives — see `hasClearedSource` below. That way, a fetch or parse
+    // that yields zero channels leaves the existing data intact instead of
+    // wiping it and leaving the URL permanently stale.
+    let hasClearedSource = false;
 
+    try {
         const response = await fetch(url.trim());
+        const isGzipped = shouldGunzipEpgResponse(url, response);
+
+        if (response.url && response.url !== url) {
+            console.log(
+                loggerLabel,
+                `Resolved EPG redirect: ${url} -> ${response.url}`
+            );
+        }
+
+        console.log(
+            loggerLabel,
+            `EPG response detected as gzipped: ${isGzipped}`
+        );
 
         if (!response.ok) {
             throw new Error(`HTTP error! status: ${response.status}`);
@@ -543,8 +255,10 @@ async function fetchAndParseEpgStreaming(url: string): Promise<void> {
 
         const parser = new StreamingEpgParser(
             (channels) => {
-                // Insert channels directly into database
-                epgDb.insertChannels(channels, url);
+                // Clear old rows in the same transaction as the first insert
+                // so we never end up with zero rows on a failed/empty parse.
+                epgDb.insertChannels(channels, url, !hasClearedSource);
+                hasClearedSource = true;
             },
             (programs) => {
                 // Insert programs directly into database
@@ -557,7 +271,9 @@ async function fetchAndParseEpgStreaming(url: string): Promise<void> {
                     stats: { totalChannels, totalPrograms },
                 };
                 parentPort?.postMessage(response);
-            }
+            },
+            CHANNEL_BATCH_SIZE,
+            PROGRAM_BATCH_SIZE
         );
 
         // Convert web stream to Node.js stream
@@ -597,6 +313,23 @@ async function fetchAndParseEpgStreaming(url: string): Promise<void> {
 
                     // Close database connection
                     epgDb.close();
+
+                    // Treat empty results as failure rather than silently
+                    // marking the URL as fetched — that causes the freshness
+                    // check to re-trigger a fetch every session and hides the
+                    // real problem (unreachable feed, SAX parse failure, etc.).
+                    if (stats.totalChannels === 0) {
+                        const errorMessage = `EPG parse produced 0 channels — feed may be unreachable or unsupported`;
+                        console.error(loggerLabel, `${errorMessage}: ${url}`);
+                        const response: WorkerResponse = {
+                            type: 'EPG_ERROR',
+                            url,
+                            error: errorMessage,
+                        };
+                        parentPort?.postMessage(response);
+                        reject(new Error(errorMessage));
+                        return;
+                    }
 
                     const response: WorkerResponse = {
                         type: 'EPG_COMPLETE',

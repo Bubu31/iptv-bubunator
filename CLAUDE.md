@@ -15,14 +15,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Meaningful changes include new or changed user-visible behavior, architecture or data-flow changes, non-obvious maintenance workflows, new setup/debugging steps, and new subsystem contracts or boundaries.
 - Skip doc updates for trivial refactors with unchanged behavior, formatting-only edits, and isolated test-only changes.
 - Prefer updating an existing authoritative doc before creating a new one:
-  1. `README.md` for top-level developer or user workflows
-  2. `docs/architecture/` for architecture, ownership, and behavior contracts
-  3. the nearest module `README.md` for local usage or behavior
+    1. `README.md` for top-level developer or user workflows
+    2. `docs/architecture/` for architecture, ownership, and behavior contracts
+    3. the nearest module `README.md` for local usage or behavior
 - Repo docs are canonical even when they were originally drafted by an LLM. External wiki pages are derivative or synthesis content unless explicitly promoted back into the repo.
 - The external wiki sync is one-way by default: repo docs -> external wiki `_repo-context/`.
 - If repo docs changed and `IPTVNATOR_WIKI_VAULT` is configured, run `pnpm wiki:export --mode changed` after the doc update.
 - The wiki exporter only owns `_repo-context/` in the external vault. It must never overwrite repo docs or maintained wiki pages outside that folder.
 - Final task summaries should state whether docs were updated, which doc changed, and whether wiki export ran, was skipped, or failed.
+
+## Regression Prevention And Test Updates
+
+- Before the final summary for any feature, behavior change, bug fix, data-flow change, Electron IPC/database change, or user-visible UI workflow change, Claude Code must complete a test impact pass. Identify the affected projects and decide whether unit, integration, E2E, build, lint, or manual/CDP verification is required.
+- Bug fixes must normally include regression coverage that fails on the old behavior and passes with the fix. If automated coverage is not practical, document why in the final summary and include the strongest manual validation performed.
+- Feature work and behavior changes must update existing tests when assertions, fixtures, mocks, routes, or E2E flows are now stale, incomplete, or missing. Prefer extending the closest existing spec or E2E file before adding a new suite.
+- Default validation ladder:
+    1. Run targeted unit tests for directly affected projects with `pnpm nx test <project>` or existing scripts such as `pnpm run test:frontend`, `pnpm run test:backend`, or `pnpm run test:unit:ci` when the scope is broader.
+    2. Run affected E2E coverage when changing user-visible workflows, routing, persistence, playback, portals, settings, import flows, or Electron-only behavior.
+    3. Use `pnpm nx show projects --withTarget test` and `pnpm nx show projects --withTarget e2e` when project ownership or available validation targets are unclear.
+    4. Prefer specific atomized E2E targets before broad suites when they cover the changed behavior, for example `pnpm nx run web-e2e:e2e-ci--src/xtream.e2e.ts` or `pnpm nx run electron-backend-e2e:e2e-ci--src/search.e2e.ts`.
+- Electron-specific changes affecting IPC, SQLite, packaged runtime, external players, native file access, or Electron-only routes require Electron E2E coverage where available, or CDP/manual verification with `agent-browser` and the tracing flags documented below.
+- Final task summaries must list tests added or updated, validation commands run with results, and any skipped validation with the reason. For docs-only changes, state that unit/E2E validation was not required and verify the changed Markdown instead.
 
 ## Project Overview
 
@@ -31,6 +44,20 @@ IPTVnator is a cross-platform IPTV player application built with Angular and Ele
 **Dual Environment Support**: The application is designed to work in both Electron and as a Progressive Web App (PWA). The architecture uses a factory pattern to inject environment-specific services at runtime, ensuring the same codebase works in both contexts.
 
 ## Development Commands
+
+### Agent Bootstrap
+
+```bash
+pnpm install --frozen-lockfile
+pnpm nx show projects
+```
+
+- Run the install step in a fresh worktree before relying on Nx discovery, lint, test, or build commands. Without `node_modules`, local Nx modules are unavailable.
+- Use scoped path aliases from `tsconfig.base.json` such as `@iptvnator/services`, `@iptvnator/shared/interfaces`, and `@iptvnator/ui/components`.
+- Do not add new imports from legacy bare aliases such as `services`, `shared-interfaces`, `components`, `m3u-state`, or `database`.
+- Every Nx project should keep `scope:*`, `domain:*`, and `type:*` tags in `project.json`.
+- See `docs/architecture/nx-workspace-boundaries.md` for the current Nx tag and alias policy.
+- Repository-specific skills are committed under `.codex/skills/`. If Claude Code does not load skills directly, treat those files as concise ownership docs.
 
 ### Building and Serving
 
@@ -96,6 +123,7 @@ Useful narrower flags:
 - `IPTVNATOR_TRACE_DB=1` traces DB worker requests and DB progress events
 - `IPTVNATOR_TRACE_SQL=1` traces SQLite statements in both main and worker connections
 - `IPTVNATOR_TRACE_WINDOW=1` traces BrowserWindow navigation/load lifecycle
+- `IPTVNATOR_TRACE_PLAYER=1` traces external-player launch/reuse/polling debug output
 - `IPTVNATOR_TRACE_RENDERER_CONSOLE=1` mirrors renderer console logs into the Electron terminal
 
 For GPU/compositor debugging:
@@ -139,19 +167,26 @@ npx --yes agent-browser --cdp 9222 tab list
 # Run frontend tests
 pnpm run test:frontend
 # or
-nx test web
+pnpm nx test web
 
 # Run backend tests
 pnpm run test:backend
 # or
-nx test electron-backend
+pnpm nx test electron-backend
 
-# Run e2e tests (Playwright)
-nx e2e web-e2e
+# Run targeted E2E tests (Playwright)
+pnpm nx run web-e2e:e2e-ci--src/xtream.e2e.ts
+pnpm nx run electron-backend-e2e:e2e-ci--src/search.e2e.ts
 
-# Run tests with coverage
-nx test web --configuration=ci
+# Run broad E2E suites only when the impact justifies it
+pnpm nx e2e web-e2e
+pnpm nx e2e electron-backend-e2e
+
+# Run tests with coverage when needed
+pnpm nx test web --configuration=ci
 ```
+
+Before finishing behavior changes or bug fixes, follow `Regression Prevention And Test Updates` above and report the test impact decision in the final summary.
 
 ### Linting
 
@@ -236,6 +271,7 @@ The Xtream Codes module uses NgRx Signal Store with a layered architecture:
 ```
 
 File structure:
+
 ```
 apps/web/src/app/xtream-electron/
 ├── stores/
@@ -263,6 +299,7 @@ apps/web/src/app/xtream-electron/
 ```
 
 Key patterns:
+
 - **Feature stores**: Each `with*.feature.ts` uses `signalStoreFeature()` for focused functionality
 - **Facade pattern**: `XtreamStore` composes all features, maintaining backward compatibility
 - **Data source abstraction**: `IXtreamDataSource` interface with environment-specific implementations
@@ -314,6 +351,7 @@ The M3U playlist module handles traditional M3U/M3U8 playlists with support for 
 ```
 
 Key radio behavior:
+
 - Detection: `channel.radio === 'true'` (string from M3U `radio` attribute)
 - The audio player always renders inline — `shouldShowInlinePlayer` is bypassed for radio
 - EPG panel is conditionally hidden in the template when radio is active
@@ -322,6 +360,7 @@ Key radio behavior:
 - Component: `libs/ui/playback/src/lib/audio-player/audio-player.component.ts`
 
 Channel List Component Structure (parent coordinator pattern):
+
 ```
 libs/ui/components/src/lib/channel-list-container/
 ├── channel-list-container.component.ts   # Parent - shared state coordinator
@@ -332,6 +371,7 @@ libs/ui/components/src/lib/channel-list-container/
 ```
 
 Key patterns:
+
 - **EnrichedChannel**: Pre-computed EPG data attached to channels for performance
 - **Parent coordinator**: Manages shared signals (`channelEpgMap`, `progressTick`, `favoriteIds`)
 - **Virtual scrolling**: CDK virtual scroll for 90,000+ channel lists
@@ -339,6 +379,7 @@ Key patterns:
 - **Global progress tick**: Single 30s interval instead of per-item intervals
 
 State management via NgRx (`libs/m3u-state/`):
+
 - `PlaylistActions`: loadPlaylists, addPlaylist, removePlaylist, parsePlaylist
 - `ChannelActions`: setChannels, setActiveChannel, setAdjacentChannelAsActive
 - `EpgActions`: setActiveEpgProgram, setCurrentEpgProgram, setEpgAvailableFlag
@@ -388,6 +429,7 @@ Keep TypeScript files under **300 lines**. Hard maximum is **350–400 lines**.
 - When you notice a file already exceeds 350 lines, **proactively suggest a refactoring** (or perform it if the change is straightforward) — even if the immediate task is small.
 
 Typical split strategies:
+
 - Angular components: extract child components, move logic to a dedicated service or store feature
 - Signal store features: split into smaller `with*` feature functions in separate files
 - Services: split by responsibility (e.g. separate API, transformation, and state concerns)
@@ -402,6 +444,7 @@ This rule exists to keep the codebase navigable and reviewable. A 150-line file 
 This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use the following:
 
 - **Component Queries**: Use `viewChild()`, `viewChildren()`, `contentChild()`, `contentChildren()` instead of `@ViewChild`, `@ViewChildren`, `@ContentChild`, `@ContentChildren` decorators
+
     ```typescript
     // ✅ Correct - Signal-based
     readonly menu = viewChild.required<MatMenu>('menuRef');
@@ -413,6 +456,7 @@ This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use 
     ```
 
     **Important**: When using signals in templates with properties that expect non-signal values, unwrap the signal by calling it:
+
     ```html
     <!-- ✅ Correct - Unwrap the signal -->
     <button [matMenuTriggerFor]="menu()">Open Menu</button>
@@ -422,6 +466,7 @@ This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use 
     ```
 
 - **Component Inputs/Outputs**: Use `input()` and `output()` functions instead of `@Input()` and `@Output()` decorators
+
     ```typescript
     // ✅ Correct - Signal-based
     readonly title = input.required<string>();
@@ -435,6 +480,7 @@ This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use 
     ```
 
 - **Reactive State**: Use signal primitives for reactive state management
+
     ```typescript
     // ✅ Use signal(), computed(), effect(), linkedSignal()
     readonly count = signal(0);
@@ -448,12 +494,14 @@ This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use 
     ```
 
 - **Host Bindings**: Use `@HostBinding()` and `@HostListener()` decorators (these don't have signal equivalents yet)
+
     ```typescript
     @HostBinding('class.active') get isActive() { return this.active(); }
     @HostListener('click') onClick() { /* ... */ }
     ```
 
 - **Control Flow**: Use `@if`, `@for`, `@switch` instead of `*ngIf`, `*ngFor`, `*ngSwitch`
+
     ```typescript
     // ✅ Correct - Modern syntax
     @if (isLoggedIn()) {
@@ -495,19 +543,20 @@ This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use 
 - **Preload script**: `apps/electron-backend/src/app/api/main.preload.ts`
     - Exposes `window.electron` API via `contextBridge`
     - All IPC channels defined here (playlist operations, EPG, database CRUD, external players, etc.)
+    - The canonical TypeScript contract is `ElectronBridgeApi` in `libs/shared/interfaces/src/lib/electron-api.interface.ts`; `global.d.ts`, `apps/web/src/typings.d.ts`, and `main.preload.ts` must reference this shared type instead of maintaining separate method lists.
 - **Event handlers**: `apps/electron-backend/src/app/events/`
     - `database.events.ts` - Database CRUD operations
     - `playlist.events.ts` - Playlist import/update
-    - `epg.events.ts` - EPG fetch and parsing (uses worker)
+    - `epg.events.ts` - EPG IPC registration and freshness/fetch orchestration; worker lifecycle lives in `epg-worker.service.ts`, DB lookups in `epg-query.service.ts`
     - `xtream.events.ts` - Xtream Codes API
     - `stalker.events.ts` - Stalker portal API
-    - `player.events.ts` - External player (MPV, VLC) integration
+    - `player.events.ts` - External player IPC registration; MPV/VLC lifecycle logic lives in `mpv-session.service.ts`, `vlc-session.service.ts`, and shared `external-player-*` helpers
     - `settings.events.ts` - App settings
     - `electron.events.ts` - App version, etc.
 
 **Workers**:
 
-- EPG parsing runs in worker thread: `apps/electron-backend/src/app/workers/epg-parser.worker.ts`
+- EPG parsing runs in worker thread: `apps/electron-backend/src/app/workers/epg-parser.worker.ts`; main-process worker lifecycle is coordinated from `apps/electron-backend/src/app/events/epg-worker.service.ts`
 
 ### Key Features
 
@@ -521,6 +570,7 @@ This project uses modern Angular signal-based APIs and patterns. **ALWAYS** use 
 
 - Built-in HTML5 player with HLS.js or Video.js
 - External players: MPV, VLC (via IPC to Electron backend)
+- Embedded MPV (experimental, macOS only): renders libmpv into a custom Cocoa view inside the Electron window. Because the standard `--wid` path is bypassed, mpv's own screensaver inhibition does not apply, so `EmbeddedMpvNativeService` holds an Electron `powerSaveBlocker` (`prevent-display-sleep`) whenever any session's status is `playing`, and releases it on pause, dispose, or shutdown. Service: `apps/electron-backend/src/app/services/embedded-mpv-native.service.ts`.
 
 **Radio Player**:
 
@@ -595,23 +645,25 @@ The factory pattern ensures a single codebase works in both environments without
 ### Testing Strategy
 
 - **Unit tests**: Jest with `jest-preset-angular` and `ng-mocks`
-- **E2E tests**: Playwright testing the web app
+- **E2E tests**: Playwright testing the web app and Electron app
 - Backend tests use standard Jest
+- Bug fixes should add focused regression coverage unless there is a documented reason not to.
+- Use the impact-based validation policy in `Regression Prevention And Test Updates` to choose targeted unit tests, atomized E2E targets, broad suites, or CDP/manual verification.
 
 ### Nx Commands
 
 Use `nx` CLI for better performance:
 
 ```bash
-nx run <project>:<target>
-# Example: nx run web:build
-# Example: nx run electron-backend:serve
+pnpm nx run <project>:<target>
+# Example: pnpm nx run web:build
+# Example: pnpm nx run electron-backend:serve
 ```
 
 To run multiple projects:
 
 ```bash
-nx run-many --target=test --all
+pnpm nx run-many --target=test --all
 ```
 
 ### Electron Build Process
@@ -651,13 +703,23 @@ No formal migration system yet. Schema changes are applied via raw SQL in `conne
 <!-- nx configuration start-->
 <!-- Leave the start & end comments to automatically receive updates. -->
 
-# General Guidelines for working with Nx
+## General Guidelines for working with Nx
 
+- For navigating/exploring the workspace, invoke the `nx-workspace` skill first when it is available - it has patterns for querying projects, targets, and dependencies. If it is unavailable, use `pnpm nx show projects`, `pnpm nx graph`, and project `project.json` files directly.
 - When running tasks (for example build, lint, test, e2e, etc.), always prefer running the task through `nx` (i.e. `nx run`, `nx run-many`, `nx affected`) instead of using the underlying tooling directly
+- Prefix nx commands with the workspace's package manager (e.g., `pnpm nx build`, `npm exec nx test`) - avoids using globally installed CLI
 - You have access to the Nx MCP server and its tools, use them to help the user
-- When answering questions about the repository, use the `nx_workspace` tool first to gain an understanding of the workspace architecture where applicable.
-- When working in individual projects, use the `nx_project_details` mcp tool to analyze and understand the specific project structure and dependencies
-- For questions around nx configuration, best practices or if you're unsure, use the `nx_docs` tool to get relevant, up-to-date docs. Always use this instead of assuming things about nx configuration
-- If the user needs help with an Nx configuration or project graph error, use the `nx_workspace` tool to get any errors
+- For Nx plugin best practices, check `node_modules/@nx/<plugin>/PLUGIN.md`. Not all plugins have this file - proceed without it if unavailable.
+- NEVER guess CLI flags - always check nx_docs or `--help` first when unsure
+
+## Scaffolding & Generators
+
+- For scaffolding tasks (creating apps, libs, project structure, setup), ALWAYS invoke the `nx-generate` skill FIRST before exploring or calling MCP tools
+
+## When to use nx_docs
+
+- USE for: advanced config options, unfamiliar flags, migration guides, plugin configuration, edge cases
+- DON'T USE for: basic generator syntax (`nx g @nx/react:app`), standard commands, things you already know
+- The `nx-generate` skill handles generator discovery internally - don't call nx_docs just to look up generator syntax
 
 <!-- nx configuration end-->

@@ -3,7 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { MatDialog } from '@angular/material/dialog';
 import { TranslateModule } from '@ngx-translate/core';
-import { EpgProgram } from 'shared-interfaces';
+import { EpgProgram } from '@iptvnator/shared/interfaces';
 import { ChannelListItemComponent } from './channel-list-item.component';
 
 describe('ChannelListItemComponent', () => {
@@ -76,6 +76,40 @@ describe('ChannelListItemComponent', () => {
         expect(
             fixture.nativeElement.querySelector('.epg-placeholder')
         ).toBeNull();
+    });
+
+    it('shows the generic fallback icon when no logo is available', () => {
+        fixture.componentRef.setInput('name', 'Channel Without Logo');
+        fixture.componentRef.setInput('logo', '');
+        fixture.detectChanges();
+
+        expect(
+            fixture.nativeElement.querySelector('.channel-logo-fallback')
+        ).not.toBeNull();
+        expect(fixture.nativeElement.querySelector('.channel-logo')).toBeNull();
+    });
+
+    it('emits clicked on a single click by default', () => {
+        const clicked = jest.fn();
+        fixture.componentInstance.clicked.subscribe(clicked);
+
+        fixture.componentInstance.onClick({ detail: 1 } as MouseEvent);
+
+        expect(clicked).toHaveBeenCalledTimes(1);
+    });
+
+    it('suppresses the second browser click and emits activation on double click', () => {
+        const clicked = jest.fn();
+        const activated = jest.fn();
+        fixture.componentInstance.clicked.subscribe(clicked);
+        fixture.componentInstance.activated.subscribe(activated);
+
+        fixture.componentInstance.onClick({ detail: 1 } as MouseEvent);
+        fixture.componentInstance.onClick({ detail: 2 } as MouseEvent);
+        fixture.componentInstance.onDoubleClick();
+
+        expect(clicked).toHaveBeenCalledTimes(1);
+        expect(activated).toHaveBeenCalledTimes(1);
     });
 
     it('emits a context menu request on right click when details are enabled', () => {

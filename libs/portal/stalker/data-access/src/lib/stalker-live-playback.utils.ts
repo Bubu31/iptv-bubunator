@@ -1,11 +1,15 @@
-import { Playlist } from 'shared-interfaces';
+import { PlaylistMeta } from '@iptvnator/shared/interfaces';
+import {
+    buildStalkerSerialCfduid,
+    normalizeStalkerSerialNumber,
+} from './stalker-identity.utils';
 
 export const STALKER_MAG_USER_AGENT =
     'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG250';
 export const STALKER_STREAM_USER_AGENT = 'KSPlayer';
 
 export function getStalkerPortalOrigin(
-    playlist: Playlist | undefined | null
+    playlist: PlaylistMeta | undefined | null
 ): string | undefined {
     const portalUrl = playlist?.portalUrl;
     if (!portalUrl) {
@@ -20,7 +24,7 @@ export function getStalkerPortalOrigin(
 }
 
 export function isCrossOriginStalkerStream(
-    playlist: Playlist | undefined | null,
+    playlist: PlaylistMeta | undefined | null,
     streamUrl?: string
 ): boolean {
     const portalOrigin = getStalkerPortalOrigin(playlist);
@@ -36,7 +40,7 @@ export function isCrossOriginStalkerStream(
 }
 
 export function buildStalkerExternalPlaybackHeaders(
-    playlist: Playlist | undefined | null,
+    playlist: PlaylistMeta | undefined | null,
     token?: string | null,
     streamUrl?: string
 ): Record<string, string> {
@@ -59,18 +63,22 @@ export function buildStalkerExternalPlaybackHeaders(
         'stb_lang=en_US@rg=dezzzz',
         'timezone=Europe/Berlin',
     ];
+    const serialNumber = normalizeStalkerSerialNumber(
+        playlist.stalkerSerialNumber
+    );
 
-    if (playlist.stalkerSerialNumber) {
-        cookieParts.push(
-            `__cfduid=${playlist.stalkerSerialNumber.toLowerCase()}e030245495acd6ebfc1`
-        );
+    if (serialNumber) {
+        cookieParts.push(`__cfduid=${buildStalkerSerialCfduid(serialNumber)}`);
     }
 
     const headers: Record<string, string> = {
         Cookie: cookieParts.join('; '),
         'X-User-Agent': STALKER_MAG_USER_AGENT,
-        SN: playlist.stalkerSerialNumber || '',
     };
+
+    if (serialNumber) {
+        headers['SN'] = serialNumber;
+    }
 
     if (token) {
         headers['Authorization'] = `Bearer ${token}`;

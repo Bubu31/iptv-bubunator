@@ -12,6 +12,7 @@ import {
     StalkerStore,
     StalkerVodSource,
 } from '@iptvnator/portal/stalker/data-access';
+import { PlaybackPositionRuntimeBridgeService } from '@iptvnator/services';
 import {
     PortalCatalogItemProgress,
     PortalCatalogPlaylistMeta,
@@ -20,15 +21,14 @@ import {
     PORTAL_PLAYBACK_POSITIONS,
     StalkerPortalCatalogFacade,
 } from '@iptvnator/portal/shared/util';
-import { PlaybackPositionData } from 'shared-interfaces';
+import { PlaybackPositionData } from '@iptvnator/shared/interfaces';
 
 function calculateProgress(position: PlaybackPositionData | undefined): number {
     if (!position || !position.durationSeconds) {
         return 0;
     }
 
-    const percent =
-        (position.positionSeconds / position.durationSeconds) * 100;
+    const percent = (position.positionSeconds / position.durationSeconds) * 100;
 
     if (position.positionSeconds > 10 && percent < 1) {
         return 1;
@@ -38,20 +38,20 @@ function calculateProgress(position: PlaybackPositionData | undefined): number {
 }
 
 @Injectable()
-export class StalkerCatalogFacadeService
-    implements
-        StalkerPortalCatalogFacade<
-            Record<string, unknown>,
-            StalkerVodSource,
-            StalkerVodSource
-        >
-{
+export class StalkerCatalogFacadeService implements StalkerPortalCatalogFacade<
+    Record<string, unknown>,
+    StalkerVodSource,
+    StalkerVodSource
+> {
     private readonly stalkerStore = inject(StalkerStore);
     private readonly playbackPositions = inject(PORTAL_PLAYBACK_POSITIONS);
-    private readonly destroyRef = inject(DestroyRef);
-    private readonly stalkerPositions = signal<Map<string, PlaybackPositionData>>(
-        new Map()
+    private readonly playbackPositionBridge = inject(
+        PlaybackPositionRuntimeBridgeService
     );
+    private readonly destroyRef = inject(DestroyRef);
+    private readonly stalkerPositions = signal<
+        Map<string, PlaybackPositionData>
+    >(new Map());
     private readonly stalkerSeriesPositions = signal<
         Map<number, PlaybackPositionData[]>
     >(new Map());
@@ -72,9 +72,9 @@ export class StalkerCatalogFacadeService
         this.stalkerStore.isPaginatedContentLoading;
     readonly selectedCategoryTitle = computed(() => {
         const category = this.selectedCategory();
-        const fromCategory = String(
-            category?.['category_name'] ?? category?.['name'] ?? ''
-        );
+        const fromCategory = category
+            ? String(category.category_name ?? '')
+            : '';
 
         if (fromCategory) {
             return fromCategory;
@@ -122,29 +122,33 @@ export class StalkerCatalogFacadeService
             void this.loadStalkerPositions(playlistId);
         });
 
-        if (window.electron?.onPlaybackPositionUpdate) {
-            const unsubscribe = window.electron.onPlaybackPositionUpdate(
+        const unsubscribe =
+            this.playbackPositionBridge.onPlaybackPositionUpdate(
                 (data: PlaybackPositionData) => {
-                    if (data.playlistId !== this.playlist()?.id) {
+                    if (
+                        !data.playlistId ||
+                        data.playlistId !== this.playlist()?.id
+                    ) {
                         return;
                     }
+
+                    void this.playbackPositions.savePlaybackPosition(
+                        data.playlistId,
+                        data
+                    );
 
                     if (data.contentType === 'vod') {
                         this.updateVodPlaybackPosition(data);
                     }
 
-                    if (
-                        data.contentType === 'episode' &&
-                        data.seriesXtreamId
-                    ) {
+                    if (data.contentType === 'episode' && data.seriesXtreamId) {
                         this.updateSeriesPlaybackPosition(data);
                     }
                 }
             );
 
-            if (typeof unsubscribe === 'function') {
-                this.destroyRef.onDestroy(unsubscribe);
-            }
+        if (unsubscribe) {
+            this.destroyRef.onDestroy(unsubscribe);
         }
     }
 
@@ -160,6 +164,10 @@ export class StalkerCatalogFacadeService
 
     clearSelectedItem(): void {
         this.stalkerStore.clearSelectedItem();
+    }
+
+    setSearchQuery(query: string): void {
+        this.stalkerStore.setSearchPhrase(query);
     }
 
     setPage(page: number): void {

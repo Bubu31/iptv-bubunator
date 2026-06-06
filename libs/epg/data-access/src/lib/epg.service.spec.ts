@@ -1,119 +1,116 @@
-/* import { TestBed } from '@angular/core/testing';
-import { MatSnackBar, MatSnackBarModule } from '@angular/material/snack-bar';
-import { MockStore, provideMockStore } from '@ngrx/store/testing';
+import { TestBed } from '@angular/core/testing';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslateService } from '@ngx-translate/core';
-import { invoke } from '@tauri-apps/api/core';
-import { MockModule, MockProviders } from 'ng-mocks';
-import { DataService } from './data.service';
+import { firstValueFrom } from 'rxjs';
+import { EpgRuntimeBridgeService } from './epg-runtime-bridge.service';
 import { EpgService } from './epg.service';
-
-jest.mock('@tauri-apps/api/core', () => ({
-    invoke: jest.fn(),
-    isTauri: () => true,
-}));
 
 describe('EpgService', () => {
     let service: EpgService;
-    let snackBar: MatSnackBar;
-    let store: MockStore;
-    let translateService: TranslateService;
-    let dispatchSpy: jest.SpyInstance;
+    let epgBridge: Partial<EpgRuntimeBridgeService>;
+    let snackBar: { open: jest.Mock };
 
     beforeEach(() => {
+        epgBridge = {
+            fetchEpg: jest.fn().mockResolvedValue({ success: true }),
+            getChannelPrograms: jest.fn().mockResolvedValue([]),
+            getCurrentProgramsBatch: jest.fn().mockResolvedValue({}),
+            supportsCurrentProgramBatch: false,
+            supportsImport: false,
+            supportsProgramLookup: false,
+        };
+        snackBar = {
+            open: jest.fn(),
+        };
+
         TestBed.configureTestingModule({
             providers: [
                 EpgService,
-                MockProviders(DataService, TranslateService, MatSnackBar),
-                provideMockStore(),
+                {
+                    provide: EpgRuntimeBridgeService,
+                    useValue: epgBridge,
+                },
+                {
+                    provide: MatSnackBar,
+                    useValue: snackBar,
+                },
+                {
+                    provide: TranslateService,
+                    useValue: {
+                        instant: (key: string) => key,
+                    },
+                },
             ],
-            imports: [MockModule(MatSnackBarModule)],
         });
 
         service = TestBed.inject(EpgService);
-        snackBar = TestBed.inject(MatSnackBar);
-        store = TestBed.inject(MockStore);
-        translateService = TestBed.inject(TranslateService);
+    });
 
-        jest.spyOn(translateService, 'instant').mockImplementation(
-            (key) => key
+    it('does not fetch EPG when bridge import support is disabled', () => {
+        service.fetchEpg(['https://example.com/epg.xml']);
+
+        expect(epgBridge.fetchEpg).not.toHaveBeenCalled();
+    });
+
+    it('fetches EPG through the EPG runtime bridge when import support is enabled', () => {
+        epgBridge.supportsImport = true;
+
+        service.fetchEpg([
+            'https://example.com/epg.xml',
+            '',
+            'https://example.com/other.xml',
+        ]);
+
+        expect(epgBridge.fetchEpg).toHaveBeenCalledWith([
+            'https://example.com/epg.xml',
+            'https://example.com/other.xml',
+        ]);
+    });
+
+    it('does not show a fetch error when the bridge returns no result', async () => {
+        epgBridge.supportsImport = true;
+        (epgBridge.fetchEpg as jest.Mock).mockResolvedValue(null);
+
+        service.fetchEpg(['https://example.com/epg.xml']);
+        await Promise.resolve();
+
+        expect(snackBar.open).not.toHaveBeenCalled();
+    });
+
+    it('returns an empty batch result when the desktop bridge is unavailable', async () => {
+        const result = await firstValueFrom(
+            service.getCurrentProgramsForChannels(['channel-1'])
         );
-        jest.spyOn(snackBar, 'open');
-        dispatchSpy = jest.spyOn(store, 'dispatch');
 
-        // Suppress console.error during tests
-        jest.spyOn(console, 'error').mockImplementation(() => {});
-        jest.spyOn(console, 'log').mockImplementation(() => {});
+        expect(result).toEqual(new Map());
+        expect(epgBridge.getCurrentProgramsBatch).not.toHaveBeenCalled();
     });
 
-    afterEach(() => {
-        jest.clearAllMocks();
+    it('returns null for current program lookup when the desktop bridge is unavailable', async () => {
+        await expect(
+            firstValueFrom(service.getCurrentProgramForChannel('channel-1'))
+        ).resolves.toBeNull();
+        expect(epgBridge.getChannelPrograms).not.toHaveBeenCalled();
     });
 
-    it('should create a service instance', () => {
-        expect(service).toBeTruthy();
-    });
+    it('uses the EPG runtime bridge for current program lookup when supported', async () => {
+        epgBridge.supportsProgramLookup = true;
+        epgBridge.getChannelPrograms = jest.fn().mockResolvedValue([
+            {
+                channel: 'channel-1',
+                start: '2026-05-23T10:00:00.000Z',
+                stop: '2026-05-23T11:00:00.000Z',
+                title: 'Morning News',
+            },
+        ]);
+        jest.useFakeTimers();
+        jest.setSystemTime(new Date('2026-05-23T10:30:00.000Z'));
 
-    describe('fetchEpg', () => {
-        it('should show success notification on successful fetch', async () => {
-            (invoke as jest.Mock).mockResolvedValueOnce({});
-            service.fetchEpg(['http://example.com/epg.xml']);
+        await expect(
+            firstValueFrom(service.getCurrentProgramForChannel('channel-1'))
+        ).resolves.toMatchObject({ title: 'Morning News' });
 
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            expect(snackBar.open).toHaveBeenCalledWith(
-                'EPG.FETCH_SUCCESS',
-                null,
-                expect.any(Object)
-            );
-        });
-
-        it('should show error notification on fetch failure', async () => {
-            (invoke as jest.Mock).mockRejectedValueOnce(new Error('Failed'));
-            service.fetchEpg(['http://example.com/epg.xml']);
-
-            await new Promise((resolve) => setTimeout(resolve, 0));
-            expect(snackBar.open).toHaveBeenCalledWith(
-                'EPG.ERROR',
-                'CLOSE',
-                expect.any(Object)
-            );
-        });
-    });
-
-    describe('getChannelPrograms', () => {
-        it('should update programs and set EPG flag to true when programs exist', (done) => {
-            const mockPrograms = [
-                {
-                    start: new Date().toISOString(),
-                    stop: new Date().toISOString(),
-                    title: 'Test',
-                },
-            ];
-            (invoke as jest.Mock).mockResolvedValueOnce(mockPrograms);
-
-            service.getChannelPrograms('test-channel');
-
-            service.currentEpgPrograms$.subscribe((programs) => {
-                expect(programs).toHaveLength(1);
-                expect(dispatchSpy).toHaveBeenCalledWith(
-                    expect.objectContaining({ value: true })
-                );
-                done();
-            });
-        });
-
-        it('should set EPG flag to false when no programs found', (done) => {
-            (invoke as jest.Mock).mockResolvedValueOnce([]);
-
-            service.getChannelPrograms('test-channel');
-
-            service.currentEpgPrograms$.subscribe((programs) => {
-                expect(programs).toHaveLength(0);
-                expect(dispatchSpy).toHaveBeenCalledWith(
-                    expect.objectContaining({ value: false })
-                );
-                done();
-            });
-        });
+        expect(epgBridge.getChannelPrograms).toHaveBeenCalledWith('channel-1');
+        jest.useRealTimers();
     });
 });
- */

@@ -2,6 +2,8 @@
 // Netflix-style Detail View - Cinematic Streaming Design
 // ============================================================================
 
+@use '../../../../styles/detail-view-actions' as detail-actions;
+
 :host {
     --poster-width: 220px;
     --poster-shadow: 0 8px 40px rgba(0, 0, 0, 0.15);
@@ -61,6 +63,8 @@
         top: 16px;
         left: 16px;
         z-index: 10;
+        app-region: no-drag;
+        -webkit-app-region: no-drag;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -322,7 +326,7 @@
         font-size: 0.9375rem;
         line-height: 1.6;
         color: var(--text-secondary);
-        margin-bottom: 20px;
+        margin-bottom: 6px;
         max-width: 600px;
 
         // Truncate long descriptions
@@ -330,6 +334,58 @@
         -webkit-line-clamp: 4;
         -webkit-box-orient: vertical;
         overflow: hidden;
+
+        &--expanded {
+            display: block;
+            -webkit-line-clamp: unset;
+            overflow: visible;
+        }
+    }
+
+    &__description-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin: 0 0 20px 0;
+        padding: 4px 0;
+        background: transparent;
+        border: 0;
+        cursor: pointer;
+        color: var(--text-secondary);
+        font: inherit;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        transition:
+            color 180ms ease,
+            transform 180ms ease;
+
+        mat-icon {
+            font-size: 16px;
+            width: 16px;
+            height: 16px;
+            line-height: 16px;
+            transition: transform 180ms ease;
+        }
+
+        &:hover {
+            color: var(--text-primary);
+
+            mat-icon {
+                transform: translateY(2px);
+            }
+        }
+
+        &[aria-expanded='true']:hover mat-icon {
+            transform: translateY(-2px);
+        }
+
+        &:focus-visible {
+            outline: 2px solid var(--accent-color);
+            outline-offset: 2px;
+            border-radius: 2px;
+        }
     }
 
     &__meta {
@@ -372,14 +428,15 @@
     ::ng-deep .play-btn {
         display: inline-flex;
         align-items: center;
-        gap: 8px;
-        padding: 12px 28px;
+        gap: 12px;
+        min-height: 64px;
+        padding: 10px 24px 10px 18px;
         font-size: 1rem;
         font-weight: 600;
         background: #fff;
         color: #141414;
         border: none;
-        border-radius: 4px;
+        border-radius: 16px;
         cursor: pointer;
         transition: all 0.2s ease;
 
@@ -393,42 +450,23 @@
             width: 24px;
             height: 24px;
         }
+
+        @include detail-actions.play-button-copy;
+    }
+
+    ::ng-deep .favorite-btn,
+    ::ng-deep .download-btn {
+        @include detail-actions.secondary-action-button;
     }
 
     ::ng-deep .favorite-btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        padding: 12px 20px;
-        font-size: 0.9375rem;
-        font-weight: 500;
-        background: rgba(109, 109, 110, 0.7);
-        color: #fff;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        transition: all 0.2s ease;
+        @include detail-actions.favorite-button-state;
+    }
 
-        &:hover {
-            background: rgba(109, 109, 110, 0.5);
-        }
-
-        &--active {
-            background: rgba(229, 9, 20, 0.8);
-
-            &:hover {
-                background: rgba(229, 9, 20, 0.6);
-            }
-        }
-
-        mat-icon {
-            font-size: 20px;
-            width: 20px;
-            height: 20px;
-        }
+    ::ng-deep .download-btn {
+        @include detail-actions.download-button-state;
     }
 }
-
 
 // ============================================================================
 // Mobile Responsive - Option A: Keep poster grid layout
@@ -483,6 +521,10 @@
 
         &__description {
             -webkit-line-clamp: 3;
+
+            &--expanded {
+                -webkit-line-clamp: unset;
+            }
         }
 
         &__meta {
@@ -493,12 +535,7 @@
     .action-buttons {
         width: 100%;
 
-        ::ng-deep .play-btn,
-        ::ng-deep .favorite-btn {
-            flex: 1;
-            justify-content: center;
-            padding: 10px 16px;
-        }
+        @include detail-actions.projected-mobile-action-buttons;
     }
 }
 

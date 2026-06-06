@@ -9,7 +9,7 @@
             "enabled": false
         }
     },
-    "tags": ["scope:app", "type:app"],
+    "tags": ["scope:app", "domain:web", "type:app"],
     "targets": {
         "build": {
             "executor": "@angular/build:application",
@@ -22,6 +22,7 @@
                 "polyfills": ["zone.js"],
                 "tsConfig": "apps/web/tsconfig.app.json",
                 "inlineStyleLanguage": "scss",
+                "serviceWorker": "ngsw-config.json",
                 "assets": [
                     "apps/web/src/favicon.ico",
                     "apps/web/src/assets",
@@ -65,6 +66,15 @@
                             "maximumError": "15kb"
                         }
                     ],
+                    "optimization": {
+                        "scripts": true,
+                        "styles": {
+                            "minify": true,
+                            "inlineCritical": false,
+                            "removeSpecialComments": true
+                        },
+                        "fonts": true
+                    },
                     "outputHashing": "all",
                     "fileReplacements": [
                         {
@@ -88,7 +98,15 @@
                         }
                     ],
                     "outputHashing": "all",
-                    "optimization": true,
+                    "optimization": {
+                        "scripts": true,
+                        "styles": {
+                            "minify": true,
+                            "inlineCritical": false,
+                            "removeSpecialComments": true
+                        },
+                        "fonts": true
+                    },
                     "extractLicenses": true,
                     "sourceMap": false,
                     "fileReplacements": [
@@ -99,12 +117,26 @@
                     ]
                 },
                 "development": {
+                    "serviceWorker": false,
+                    "optimization": false,
+                    "extractLicenses": false,
+                    "sourceMap": true
+                },
+                "electron-e2e": {
+                    "baseHref": "./",
+                    "serviceWorker": false,
                     "optimization": false,
                     "extractLicenses": false,
                     "sourceMap": true
                 }
             },
             "defaultConfiguration": "production"
+        },
+        "build-e2e": {
+            "executor": "nx:run-commands",
+            "options": {
+                "command": "pnpm nx run web:build:electron-e2e"
+            }
         },
         "serve": {
             "continuous": true,
@@ -154,9 +186,9 @@
             "continuous": true,
             "executor": "@nx/web:file-server",
             "options": {
-                "buildTarget": "web:build",
+                "buildTarget": "web:build:pwa",
                 "port": 4200,
-                "staticFilePath": "dist/apps/web/browser",
+                "staticFilePath": "dist/apps/web",
                 "spa": true
             }
         }

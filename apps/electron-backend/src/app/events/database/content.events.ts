@@ -27,9 +27,19 @@ handleWorkerRequest(
 
 handleWorkerRequest(
     'DB_GET_GLOBAL_RECENTLY_ADDED',
-    (kind: 'all' | 'vod' | 'series' = 'all', limit = 200) => ({
+    (
+        kind: 'all' | 'vod' | 'series' = 'all',
+        limit = 200,
+        playlistType?:
+            | 'xtream'
+            | 'stalker'
+            | 'm3u-file'
+            | 'm3u-text'
+            | 'm3u-url'
+    ) => ({
         kind,
         limit,
+        playlistType,
     })
 );
 
@@ -70,9 +80,22 @@ handleWorkerRequest(
 
 handleWorkerRequest(
     'DB_GET_CONTENT_BY_XTREAM_ID',
-    (xtreamId: number, playlistId: string) => ({
+    (
+        xtreamId: number,
+        playlistId: string,
+        contentType?: 'live' | 'movie' | 'series'
+    ) => ({
         xtreamId,
         playlistId,
+        contentType,
+    })
+);
+
+handleWorkerRequest(
+    'DB_SET_CONTENT_BACKDROP_IF_MISSING',
+    (contentId: number, backdropUrl?: string) => ({
+        contentId,
+        backdropUrl,
     })
 );
 

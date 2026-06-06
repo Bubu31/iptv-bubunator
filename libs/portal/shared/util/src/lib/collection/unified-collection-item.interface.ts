@@ -5,6 +5,8 @@
  * Extends the previous live-only UnifiedFavoriteChannel to cover
  * all content types: live TV, movies, and series.
  */
+import { Channel } from '@iptvnator/shared/interfaces';
+
 export type CollectionSourceType = 'm3u' | 'xtream' | 'stalker';
 export type CollectionContentType = 'live' | 'movie' | 'series';
 
@@ -42,8 +44,11 @@ export interface UnifiedCollectionItem {
     /** M3U playlist channel id used to rehydrate the full channel object */
     channelId?: string;
 
-    /** M3U radio flag used to preserve the dedicated radio player layout */
+    /** Radio flag used to preserve the dedicated audio player layout */
     radio?: string;
+
+    /** Full M3U channel metadata used by shared live collection row actions */
+    m3uChannel?: Channel;
 
     /** Xtream numeric stream ID */
     xtreamId?: number;
@@ -85,4 +90,16 @@ export function buildCollectionUid(
     sourceItemId: string | number
 ): string {
     return `${sourceType}::${playlistId}::${sourceItemId}`;
+}
+
+export function buildXtreamCollectionUid(
+    playlistId: string,
+    contentType: CollectionContentType,
+    xtreamId: string | number
+): string {
+    return buildCollectionUid(
+        'xtream',
+        playlistId,
+        `${contentType}:${xtreamId}`
+    );
 }

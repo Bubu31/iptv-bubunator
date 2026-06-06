@@ -2,16 +2,18 @@ import { inject, Injectable } from '@angular/core';
 import {
     DatabaseService,
     PlaybackPositionService,
+    XtreamPendingRestoreService,
     XtreamImportStatus,
-} from 'services';
+} from '@iptvnator/services';
 import {
     PlaybackPositionData,
     PlaylistMeta,
+    XtreamPendingRestoreState,
     XtreamCategory,
     XtreamLiveStream,
     XtreamSerieItem,
     XtreamVodStream,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import {
     CategoryType,
     StreamType,
@@ -37,6 +39,9 @@ import {
 export class ElectronXtreamDataSource implements IXtreamDataSource {
     private readonly dbService = inject(DatabaseService);
     private readonly playbackService = inject(PlaybackPositionService);
+    private readonly pendingRestoreService = inject(
+        XtreamPendingRestoreService
+    );
     private readonly apiService = inject(XtreamApiService);
     private readonly categoryRequests = new Map<
         string,
@@ -135,8 +140,8 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
             dbType,
             options
         ).finally(() => {
-                this.categoryRequests.delete(requestKey);
-            });
+            this.categoryRequests.delete(requestKey);
+        });
 
         this.categoryRequests.set(requestKey, request);
         return request;
@@ -199,30 +204,16 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
         playlistId: string,
         type: 'live' | 'movies' | 'series'
     ): number[] | undefined {
-        const restoreKey = `xtream-restore-${playlistId}`;
-        const restoreDataStr = localStorage.getItem(restoreKey);
+        const restoreData = this.pendingRestoreService.get(playlistId);
+        const hiddenCategories = restoreData?.hiddenCategories;
 
-        if (!restoreDataStr) {
+        if (!hiddenCategories || hiddenCategories.length === 0) {
             return undefined;
         }
 
-        try {
-            const restoreData = JSON.parse(restoreDataStr) as {
-                hiddenCategories?: { xtreamId: number; type: string }[];
-            };
-            const hiddenCategories = restoreData.hiddenCategories;
-
-            if (!hiddenCategories || hiddenCategories.length === 0) {
-                return undefined;
-            }
-
-            // Filter for the specific type and return xtreamIds
-            return hiddenCategories
-                .filter((cat) => cat.type === type)
-                .map((cat) => cat.xtreamId);
-        } catch {
-            return undefined;
-        }
+        return hiddenCategories
+            .filter((category) => category.categoryType === type)
+            .map((category) => category.xtreamId);
     }
 
     async getAllCategories(
@@ -230,6 +221,16 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
         type: DbCategoryType
     ): Promise<XtreamCategoryFromDb[]> {
         return this.dbService.getAllXtreamCategories(playlistId, type);
+    }
+
+    async getCachedCategories(
+        playlistId: string,
+        type: CategoryType
+    ): Promise<XtreamCategoryFromDb[]> {
+        return this.dbService.getXtreamCategories(
+            playlistId,
+            mapCategoryTypeToDbType(type)
+        );
     }
 
     async saveCategories(
@@ -339,6 +340,13 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
         return this.dbService.getXtreamContent(playlistId, type);
     }
 
+    async getCachedContent(
+        playlistId: string,
+        type: StreamType
+    ): Promise<XtreamContentItem[]> {
+        return this.dbService.getXtreamContent(playlistId, type);
+    }
+
     async saveContent(
         playlistId: string,
         streams:
@@ -352,7 +360,7 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
     ): Promise<number> {
         return this.dbService.saveXtreamContent(
             playlistId,
-            streams,
+            streams as Parameters<DatabaseService['saveXtreamContent']>[1],
             type,
             onProgress,
             options
@@ -385,8 +393,12 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
         return this.dbService.getFavorites(playlistId);
     }
 
-    async addFavorite(contentId: number, playlistId: string): Promise<void> {
-        await this.dbService.addToFavorites(contentId, playlistId);
+    async addFavorite(
+        contentId: number,
+        playlistId: string,
+        backdropUrl?: string
+    ): Promise<void> {
+        await this.dbService.addToFavorites(contentId, playlistId, backdropUrl);
     }
 
     async removeFavorite(contentId: number, playlistId: string): Promise<void> {
@@ -405,8 +417,12 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
         return this.dbService.getRecentItems(playlistId);
     }
 
-    async addRecentItem(contentId: number, playlistId: string): Promise<void> {
-        await this.dbService.addRecentItem(contentId, playlistId);
+    async addRecentItem(
+        contentId: number,
+        playlistId: string,
+        backdropUrl?: string
+    ): Promise<void> {
+        await this.dbService.addRecentItem(contentId, playlistId, backdropUrl);
     }
 
     async removeRecentItem(
@@ -426,9 +442,26 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
 
     async getContentByXtreamId(
         xtreamId: number,
-        playlistId: string
+        playlistId: string,
+        contentType?: 'live' | 'movie' | 'series'
     ): Promise<XtreamContentItem | null> {
-        return this.dbService.getContentByXtreamId(xtreamId, playlistId);
+        return this.dbService.getContentByXtreamId(
+            xtreamId,
+            playlistId,
+            contentType
+        );
+    }
+
+    async setContentBackdropIfMissing(
+        contentId: number,
+        playlistId: string,
+        backdropUrl: string
+    ): Promise<void> {
+        void playlistId;
+        await this.dbService.setContentBackdropIfMissing(
+            contentId,
+            backdropUrl
+        );
     }
 
     // =========================================================================
@@ -504,29 +537,41 @@ export class ElectronXtreamDataSource implements IXtreamDataSource {
         // Electron uses the DB as its cache layer; no in-memory state to evict.
     }
 
-    async clearPlaylistContent(playlistId: string): Promise<{
-        favoritedXtreamIds: number[];
-        recentlyViewedXtreamIds: { xtreamId: number; viewedAt: string }[];
-    }> {
-        const result =
-            await this.dbService.deleteXtreamPlaylistContent(playlistId);
+    async clearPlaylistContent(
+        playlistId: string
+    ): Promise<XtreamPendingRestoreState> {
+        const [result, playbackPositions] = await Promise.all([
+            this.dbService.deleteXtreamPlaylistContent(playlistId),
+            this.playbackService.getAllPlaybackPositions(playlistId),
+        ]);
+
         return {
-            favoritedXtreamIds: result.favoritedXtreamIds,
-            recentlyViewedXtreamIds: result.recentlyViewedXtreamIds,
+            hiddenCategories: result.hiddenCategories,
+            favorites: result.favorites,
+            recentlyViewed: result.recentlyViewed,
+            playbackPositions,
         };
     }
 
     async restoreUserData(
         playlistId: string,
-        favoritedXtreamIds: number[],
-        recentlyViewedXtreamIds: { xtreamId: number; viewedAt: string }[],
+        restoreState: XtreamPendingRestoreState,
         options?: XtreamOperationOptions
     ): Promise<void> {
         await this.dbService.restoreXtreamUserData(
             playlistId,
-            favoritedXtreamIds,
-            recentlyViewedXtreamIds,
+            restoreState.favorites,
+            restoreState.recentlyViewed,
             options
         );
+
+        await this.playbackService.clearAllPlaybackPositions(playlistId);
+
+        for (const playbackPosition of restoreState.playbackPositions) {
+            await this.playbackService.savePlaybackPosition(
+                playlistId,
+                playbackPosition
+            );
+        }
     }
 }

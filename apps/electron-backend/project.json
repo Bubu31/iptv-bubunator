@@ -3,6 +3,7 @@
     "$schema": "../../node_modules/nx/schemas/project-schema.json",
     "sourceRoot": "apps/electron-backend/src",
     "projectType": "application",
+    "tags": ["scope:electron", "domain:electron-main", "type:app"],
     "targets": {
         "build-worker": {
             "executor": "nx:run-commands",
@@ -11,9 +12,20 @@
                 "command": "node apps/electron-backend/build-worker.js"
             }
         },
+        "build-embedded-mpv": {
+            "executor": "nx:run-commands",
+            "cache": false,
+            "outputs": [
+                "{workspaceRoot}/apps/electron-backend/native/build/Release"
+            ],
+            "options": {
+                "command": "node apps/electron-backend/build-embedded-mpv.js"
+            }
+        },
         "build": {
             "dependsOn": [
                 "electron-backend:build-worker",
+                "electron-backend:build-embedded-mpv",
                 {
                     "projects": ["web", "remote-control-web"],
                     "target": "build"
@@ -21,11 +33,29 @@
             ],
             "executor": "nx-electron:build",
             "outputs": ["{options.outputPath}"],
+            "inputs": [
+                "production",
+                "^production",
+                "{workspaceRoot}/apps/electron-backend/native/build/Release/**"
+            ],
             "options": {
                 "outputPath": "dist/apps/electron-backend",
                 "main": "apps/electron-backend/src/main.ts",
                 "tsConfig": "apps/electron-backend/tsconfig.app.json",
-                "assets": ["apps/electron-backend/src/assets"]
+                "assets": [
+                    "apps/electron-backend/src/assets",
+                    {
+                        "glob": "**/*",
+                        "input": "apps/electron-backend/native/build/Release",
+                        "output": "native",
+                        "ignore": [
+                            ".deps/**",
+                            "obj.target/**",
+                            "**/.deps/**",
+                            "**/obj.target/**"
+                        ]
+                    }
+                ]
             },
             "configurations": {
                 "production": {
@@ -42,6 +72,46 @@
             },
             "defaultConfiguration": "production"
         },
+        "build-e2e": {
+            "dependsOn": [
+                "electron-backend:build-worker",
+                "electron-backend:build-embedded-mpv",
+                {
+                    "projects": ["web"],
+                    "target": "build-e2e"
+                },
+                {
+                    "projects": ["remote-control-web"],
+                    "target": "build-e2e"
+                }
+            ],
+            "executor": "nx-electron:build",
+            "outputs": ["{options.outputPath}"],
+            "inputs": [
+                "production",
+                "^production",
+                "{workspaceRoot}/apps/electron-backend/native/build/Release/**"
+            ],
+            "options": {
+                "outputPath": "dist/apps/electron-backend",
+                "main": "apps/electron-backend/src/main.ts",
+                "tsConfig": "apps/electron-backend/tsconfig.app.json",
+                "assets": [
+                    "apps/electron-backend/src/assets",
+                    {
+                        "glob": "**/*",
+                        "input": "apps/electron-backend/native/build/Release",
+                        "output": "native",
+                        "ignore": [
+                            ".deps/**",
+                            "obj.target/**",
+                            "**/.deps/**",
+                            "**/obj.target/**"
+                        ]
+                    }
+                ]
+            }
+        },
         "serve": {
             "executor": "nx:run-commands",
             "options": {
@@ -49,6 +119,10 @@
             }
         },
         "serve-electron": {
+            "dependsOn": [
+                "electron-backend:build-worker",
+                "electron-backend:build-embedded-mpv"
+            ],
             "executor": "nx-electron:execute",
             "options": {
                 "buildTarget": "electron-backend:build",
@@ -57,7 +131,10 @@
             }
         },
         "package": {
-            "dependsOn": ["electron-backend:build"],
+            "dependsOn": [
+                "electron-backend:build",
+                "electron-backend:generate-builder-metadata"
+            ],
             "executor": "nx-electron:package",
             "options": {
                 "name": "electron-backend",
@@ -68,13 +145,34 @@
             }
         },
         "make": {
-            "dependsOn": ["electron-backend:build:production"],
+            "dependsOn": [
+                "electron-backend:build",
+                "electron-backend:generate-builder-metadata"
+            ],
             "executor": "nx-electron:make",
             "options": {
                 "name": "electron-backend",
                 "frontendProject": "web",
                 "sourcePath": "dist/apps",
                 "outputPath": "dist/executables"
+            }
+        },
+        "generate-builder-metadata": {
+            "dependsOn": ["electron-backend:build"],
+            "executor": "nx:run-commands",
+            "cache": true,
+            "inputs": [
+                "{workspaceRoot}/package.json",
+                "{workspaceRoot}/electron-builder.json",
+                "{workspaceRoot}/tools/packaging/generate-electron-builder-metadata.mjs"
+            ],
+            "outputs": [
+                "{workspaceRoot}/apps/electron-backend/src/app/options/electron-builder.metadata.generated.json",
+                "{workspaceRoot}/dist/apps/electron-backend/package.json"
+            ],
+            "options": {
+                "command": "node tools/packaging/generate-electron-builder-metadata.mjs",
+                "cwd": "{workspaceRoot}"
             }
         },
         "lint": {
@@ -87,5 +185,6 @@
                 "jestConfig": "apps/electron-backend/jest.config.ts"
             }
         }
-    }
+    },
+    "tags": ["scope:electron", "domain:electron-main", "type:app"]
 }

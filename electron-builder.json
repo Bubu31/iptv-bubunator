@@ -25,9 +25,13 @@
     "asarUnpack": [
         "**/better-sqlite3/**",
         "**/bindings/**",
-        "**/file-uri-to-path/**"
+        "**/file-uri-to-path/**",
+        "**/*.node",
+        "**/*.dylib"
     ],
     "extraMetadata": {
+        "name": "iptvnator",
+        "productName": "IPTVnator",
         "main": "electron-backend/main.js"
     },
     "extraResources": ["dist/apps/electron-backend/workers"],
@@ -47,6 +51,12 @@
     },
     "linux": {
         "category": "Video",
+        "executableName": "iptvnator",
+        "desktop": {
+            "entry": {
+                "StartupWMClass": "iptvnator"
+            }
+        },
         "target": [
             {
                 "target": "AppImage",
@@ -85,7 +95,7 @@
             ]
         ]
     },
-    "afterPack": "./tools/packaging/linux-after-pack.cjs",
+    "afterPack": "./tools/packaging/electron-after-pack.cjs",
     "snap": {
         "base": "core22",
         "confinement": "strict",

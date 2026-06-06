@@ -10,11 +10,17 @@ import {
 import { MatButtonModule } from '@angular/material/button';
 import { MatIcon } from '@angular/material/icon';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-import { ExternalPlayerSession } from 'shared-interfaces';
+import { TranslatePipe } from '@ngx-translate/core';
+import { ExternalPlayerSession } from '@iptvnator/shared/interfaces';
 
 @Component({
     selector: 'app-external-playback-dock',
-    imports: [MatButtonModule, MatIcon, MatProgressSpinnerModule],
+    imports: [
+        MatButtonModule,
+        MatIcon,
+        MatProgressSpinnerModule,
+        TranslatePipe,
+    ],
     templateUrl: './external-playback-dock.component.html',
     styleUrl: './external-playback-dock.component.scss',
     changeDetection: ChangeDetectionStrategy.OnPush,
@@ -24,30 +30,40 @@ export class ExternalPlaybackDockComponent {
     readonly compact = input(false);
 
     readonly closeClicked = output<void>();
+    readonly artworkClicked = output<void>();
     private readonly artworkFailed = signal(false);
 
     readonly playerLabel = computed(() => this.session().player.toUpperCase());
-    readonly artworkUrl = computed(() => this.session().thumbnail?.trim() ?? '');
+    readonly artworkUrl = computed(
+        () => this.session().thumbnail?.trim() ?? ''
+    );
     readonly statusLabel = computed(() => {
         const session = this.session();
-        const player = this.playerLabel();
 
         switch (session.status) {
             case 'launching':
-                return `Opening in ${player}...`;
+                return 'Launching…';
             case 'opened':
-                return `Opened in ${player}`;
             case 'playing':
-                return `Playing in ${player}`;
+                return 'Opened';
             case 'error':
-                return session.error || `${player} failed to launch`;
+                return session.error || 'Playback failed';
             default:
-                return `${player} closed`;
+                return 'Closed';
         }
+    });
+
+    readonly statusIcon = computed(() => {
+        const status = this.session().status;
+        if (status === 'error') return 'error_outline';
+        return 'open_in_new';
     });
 
     readonly showSpinner = computed(
         () => this.session().status === 'launching'
+    );
+    readonly showStatusIcon = computed(
+        () => this.session().status !== 'launching'
     );
     readonly showArtwork = computed(
         () => !!this.artworkUrl() && !this.artworkFailed()
@@ -64,6 +80,9 @@ export class ExternalPlaybackDockComponent {
                 return 'live_tv';
         }
     });
+    readonly artworkInteractive = computed(
+        () => !!this.session().contentInfo?.playlistId
+    );
     readonly showCloseButton = computed(
         () => this.session().canClose && this.session().status !== 'error'
     );
@@ -77,5 +96,10 @@ export class ExternalPlaybackDockComponent {
 
     onArtworkError(): void {
         this.artworkFailed.set(true);
+    }
+
+    onArtworkClick(): void {
+        if (!this.artworkInteractive()) return;
+        this.artworkClicked.emit();
     }
 }

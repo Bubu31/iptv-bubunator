@@ -7,6 +7,7 @@ import {
     effect,
     inject,
     input,
+    output,
     signal,
     viewChild,
 } from '@angular/core';
@@ -15,8 +16,10 @@ import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSliderModule } from '@angular/material/slider';
+import { MatTooltip } from '@angular/material/tooltip';
 import { Store } from '@ngrx/store';
-import { ChannelActions } from 'm3u-state';
+import { TranslatePipe } from '@ngx-translate/core';
+import { ChannelActions } from '@iptvnator/m3u-state';
 
 @Component({
     selector: 'app-audio-player',
@@ -25,9 +28,7 @@ import { ChannelActions } from 'm3u-state';
             @if (displayIcon() && !logoError()) {
                 <div
                     class="backdrop"
-                    [style.backgroundImage]="
-                        'url(' + displayIcon() + ')'
-                    "
+                    [style.backgroundImage]="'url(' + displayIcon() + ')'"
                 ></div>
             }
             <div class="vignette"></div>
@@ -53,7 +54,10 @@ import { ChannelActions } from 'm3u-state';
                 <h2 class="station-name">
                     {{ channelName() || 'Radio' }}
                 </h2>
-                <span class="station-badge" [class.live]="playState() === 'play'">
+                <span
+                    class="station-badge"
+                    [class.live]="playState() === 'play'"
+                >
                     @if (playState() === 'play') {
                         <span class="pulse"></span> LIVE
                     } @else {
@@ -65,6 +69,12 @@ import { ChannelActions } from 'm3u-state';
                     <button
                         mat-icon-button
                         class="skip-btn"
+                        [matTooltip]="
+                            'AUDIO_PLAYER.PREVIOUS_STATION' | translate
+                        "
+                        [attr.aria-label]="
+                            'AUDIO_PLAYER.PREVIOUS_STATION' | translate
+                        "
                         (click)="switchChannel('previous')"
                     >
                         <mat-icon>skip_previous</mat-icon>
@@ -73,20 +83,32 @@ import { ChannelActions } from 'm3u-state';
                     <button
                         class="play-btn"
                         mat-fab
-                        (click)="
-                            playState() === 'play' ? stop() : play()
+                        [matTooltip]="
+                            (playState() === 'play'
+                                ? 'AUDIO_PLAYER.PAUSE'
+                                : 'AUDIO_PLAYER.PLAY'
+                            ) | translate
                         "
+                        [attr.aria-label]="
+                            (playState() === 'play'
+                                ? 'AUDIO_PLAYER.PAUSE'
+                                : 'AUDIO_PLAYER.PLAY'
+                            ) | translate
+                        "
+                        (click)="playState() === 'play' ? stop() : play()"
                     >
                         <mat-icon>{{
-                            playState() === 'play'
-                                ? 'pause'
-                                : 'play_arrow'
+                            playState() === 'play' ? 'pause' : 'play_arrow'
                         }}</mat-icon>
                     </button>
 
                     <button
                         mat-icon-button
                         class="skip-btn"
+                        [matTooltip]="'AUDIO_PLAYER.NEXT_STATION' | translate"
+                        [attr.aria-label]="
+                            'AUDIO_PLAYER.NEXT_STATION' | translate
+                        "
                         (click)="switchChannel('next')"
                     >
                         <mat-icon>skip_next</mat-icon>
@@ -97,6 +119,18 @@ import { ChannelActions } from 'm3u-state';
                     <button
                         mat-icon-button
                         class="vol-icon"
+                        [matTooltip]="
+                            (isMuted() || volume() === 0
+                                ? 'AUDIO_PLAYER.UNMUTE'
+                                : 'AUDIO_PLAYER.MUTE'
+                            ) | translate
+                        "
+                        [attr.aria-label]="
+                            (isMuted() || volume() === 0
+                                ? 'AUDIO_PLAYER.UNMUTE'
+                                : 'AUDIO_PLAYER.MUTE'
+                            ) | translate
+                        "
                         (click)="mute()"
                     >
                         <mat-icon>{{ volumeIcon() }}</mat-icon>
@@ -106,10 +140,14 @@ import { ChannelActions } from 'm3u-state';
                         min="0"
                         max="1"
                         step="0.05"
+                        [matTooltip]="'AUDIO_PLAYER.VOLUME' | translate"
                     >
                         <input
                             matSliderThumb
                             [ngModel]="volume()"
+                            [attr.aria-label]="
+                                'AUDIO_PLAYER.VOLUME' | translate
+                            "
                             (ngModelChange)="setVolume($event)"
                         />
                     </mat-slider>
@@ -120,12 +158,21 @@ import { ChannelActions } from 'm3u-state';
         </div>
     `,
     styleUrls: ['./audio-player.component.scss'],
-    imports: [MatSliderModule, MatIconModule, MatButtonModule, FormsModule],
+    imports: [
+        FormsModule,
+        MatButtonModule,
+        MatIconModule,
+        MatSliderModule,
+        MatTooltip,
+        TranslatePipe,
+    ],
 })
 export class AudioPlayerComponent {
     readonly icon = input<string>('');
     readonly url = input.required<string>();
     readonly channelName = input<string>('');
+    readonly dispatchAdjacentChannelAction = input(true);
+    readonly channelSwitchRequested = output<'next' | 'previous'>();
 
     readonly playState = signal<'play' | 'paused'>('paused');
     readonly volume = signal(1);
@@ -206,7 +253,9 @@ export class AudioPlayerComponent {
     play() {
         const audio = this.audioRef()?.nativeElement;
         if (!audio) return;
-        audio.play().catch((err) => console.log(err));
+        audio.play().catch((err) => {
+            console.warn('[AudioPlayer] Audio playback failed:', err);
+        });
         this.playState.set('play');
     }
 
@@ -216,8 +265,7 @@ export class AudioPlayerComponent {
     }
 
     setVolume(value: number) {
-        const clamped =
-            Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
+        const clamped = Math.round(Math.max(0, Math.min(1, value)) * 100) / 100;
         this.volume.set(clamped);
         const audio = this.audioRef()?.nativeElement;
         if (audio) audio.volume = clamped;
@@ -238,9 +286,12 @@ export class AudioPlayerComponent {
     }
 
     switchChannel(direction: 'next' | 'previous') {
-        this.store.dispatch(
-            ChannelActions.setAdjacentChannelAsActive({ direction })
-        );
+        if (this.dispatchAdjacentChannelAction()) {
+            this.store.dispatch(
+                ChannelActions.setAdjacentChannelAsActive({ direction })
+            );
+        } else {
+            this.channelSwitchRequested.emit(direction);
+        }
     }
-
 }

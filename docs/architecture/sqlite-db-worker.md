@@ -267,6 +267,20 @@ Current sources:
 2. `apps/electron-backend/src/app/workers/database.worker-connection.ts`
 3. `apps/electron-backend/src/app/workers/epg-parser.worker.ts`
 
+Main-process EPG ownership is split across focused event modules:
+
+1. `apps/electron-backend/src/app/events/epg.events.ts` registers EPG IPC
+   handlers and owns freshness/fetch orchestration.
+2. `apps/electron-backend/src/app/events/epg-worker.service.ts` owns EPG
+   worker creation, renderer progress updates, fetch worker lifecycle, and
+   clear-worker lifecycle.
+3. `apps/electron-backend/src/app/events/epg-query.service.ts` owns EPG
+   channel/program database lookups, metadata resolution, and DB row mapping.
+
+Keep worker lifecycle state out of the IPC registration layer. Add new EPG DB
+lookup behavior to `epg-query.service.ts`; add new EPG worker/progress behavior
+to `epg-worker.service.ts`.
+
 ## UI Behavior Changes
 
 ### Search
@@ -280,6 +294,49 @@ Xtream search now guards against stale async responses:
 This prevents an older worker response from repainting over a newer query or a
 cleared search state.
 
+### Xtream type-aware content lookup
+
+Xtream UI flows must treat `xtream_id` as only partially unique.
+
+Current contract:
+
+1. `xtream_id` can collide across `live`, `movie`, and `series` within the same
+   playlist.
+2. Any DB-backed lookup that starts from an Xtream result card, favorite button,
+   recent-item update, continue-watching flow, or detail route must resolve
+   content by:
+    - `playlist_id`
+    - `xtream_id`
+    - `content.type`
+3. Mixed Xtream collection identity must key entries by `type + xtream_id`,
+   not `xtream_id` alone. This includes favorites maps, recent-item lists,
+   dashboard collection payloads, and other UI state keyed off persisted
+   Xtream content.
+
+Why this matters:
+
+- Search results are already type-filtered, so resolving favorites by only
+  `playlist_id + xtream_id` can favorite the wrong persisted row when IDs
+  collide.
+- Continue-watching / recently-viewed flows that resolve by only
+  `playlist_id + xtream_id` can store the wrong persisted row when a series or
+  movie ID collides with a live entry.
+- Mixed favorites maps keyed only by `xtream_id` can mark an unrelated live row
+  as favorited when the actual favorite is a movie or series with the same
+  numeric ID.
+- Mixed recent/favorites collection items keyed only by `xtream_id` can cause
+  local UI state to remove, reorder, or reactivate the wrong Xtream entry when
+  different content types collide.
+
+Current implementation paths:
+
+1. `apps/electron-backend/src/app/database/operations/content.operations.ts`
+2. `libs/portal/xtream/data-access/src/lib/with-favorites.feature.ts`
+3. `libs/portal/xtream/data-access/src/lib/with-recent-items.ts`
+4. `libs/portal/xtream/feature/src/lib/portal-channels-list/portal-channels-list.component.ts`
+5. `libs/portal/shared/util/src/lib/collection/unified-recent-data.service.ts`
+6. `libs/portal/shared/util/src/lib/collection/unified-favorites-data.service.ts`
+
 ### Busy states
 
 The UI now has explicit long-running state for destructive operations:
@@ -288,7 +345,9 @@ The UI now has explicit long-running state for destructive operations:
 2. Xtream import overlay shows phase text and a cancel action
 3. Xtream playlist rows show request-scoped progress and cancel actions
 4. busy rows block repeat clicks while an operation is in flight
-5. settings "remove all playlists" owns its own spinner/disabled state
+5. settings "remove all playlists" owns its own spinner/disabled state and
+   consumes request-scoped DB operation events for progress text while the
+   worker deletes playlist data
 
 These changes matter because once SQLite work leaves the main thread, the
 renderer can actually paint the loading state instead of freezing.
@@ -304,8 +363,8 @@ renderer can actually paint the loading state instead of freezing.
 
 The worker build also aliases:
 
-1. `database-schema`
-2. `database-path-utils`
+1. `@iptvnator/shared/database/schema`
+2. `@iptvnator/shared/database/path-utils`
 
 These aliases avoid importing the shared database barrel from inside the worker,
 which would otherwise pull in runtime code that assumes the main Electron
@@ -382,6 +441,10 @@ covers:
 1. shared worker bootstrap usage for the EPG worker
 2. `nativeModuleSearchPaths` forwarding into workerData
 3. actionable worker-path resolution failures
+4. EPG clear worker rejection on unexpected exit or timeout
+5. case-insensitive EPG program lookup fallbacks
+6. metadata lookup precedence for exact/case-insensitive id and display name
+7. malformed EPG row filtering
 
 `apps/electron-backend/src/app/workers/worker-runtime-paths.spec.ts` covers:
 

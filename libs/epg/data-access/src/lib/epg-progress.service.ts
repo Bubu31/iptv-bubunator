@@ -1,15 +1,12 @@
-import { Injectable, computed, signal } from '@angular/core';
-
-export interface EpgImportProgress {
-    url: string;
-    status: 'queued' | 'loading' | 'complete' | 'error';
-    stats?: { totalChannels: number; totalPrograms: number };
-    error?: string;
-    queuePosition?: number;
-}
+import { Injectable, computed, inject, signal } from '@angular/core';
+import {
+    EpgImportProgress,
+    EpgRuntimeBridgeService,
+} from './epg-runtime-bridge.service';
 
 @Injectable({ providedIn: 'root' })
 export class EpgProgressService {
+    private readonly epgBridge = inject(EpgRuntimeBridgeService);
     private readonly importsMap = signal<Map<string, EpgImportProgress>>(
         new Map()
     );
@@ -44,14 +41,24 @@ export class EpgProgressService {
         this.importsMap.set(new Map());
     }
 
+    retry(url: string): void {
+        // Clear the errored row so the backend's subsequent 'queued' event
+        // reappears cleanly rather than updating an existing error row.
+        this.removeImport(url);
+        if (!this.epgBridge.supportsDataManagement) {
+            return;
+        }
+        void this.epgBridge.forceFetchEpg(url);
+    }
+
     private initializeListener(): void {
         if (this.initialized) {
             return;
         }
         this.initialized = true;
 
-        if (window.electron?.onEpgProgress) {
-            window.electron.onEpgProgress((data) => {
+        if (this.epgBridge.supportsProgress) {
+            this.epgBridge.onProgress((data) => {
                 this.updateProgress(data);
             });
         }

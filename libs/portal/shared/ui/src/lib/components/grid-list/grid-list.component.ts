@@ -1,4 +1,10 @@
-import { Component, computed, input, output } from '@angular/core';
+import {
+    ChangeDetectionStrategy,
+    Component,
+    computed,
+    input,
+    output,
+} from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 import { MatIcon } from '@angular/material/icon';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
@@ -7,7 +13,7 @@ import { TranslatePipe } from '@ngx-translate/core';
 import {
     ProgressCapsuleComponent,
     WatchedBadgeComponent,
-} from 'components';
+} from '@iptvnator/ui/components';
 import { PlaylistErrorViewComponent } from '../playlist-error-view/playlist-error-view.component';
 
 interface GridListItem {
@@ -30,11 +36,33 @@ interface GridListItem {
     [key: string]: unknown;
 }
 
+export function formatGridRating(value: unknown): string | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+        return value.toFixed(1);
+    }
+
+    if (typeof value !== 'string') {
+        return undefined;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return undefined;
+    }
+
+    const numericRating = Number.parseFloat(trimmed);
+    return Number.isFinite(numericRating) ? numericRating.toFixed(1) : trimmed;
+}
+
+export function resolveGridRating(
+    item: Pick<GridListItem, 'rating' | 'rating_imdb'>
+): string | undefined {
+    return formatGridRating(item.rating_imdb) ?? formatGridRating(item.rating);
+}
+
 @Component({
     selector: 'app-grid-list',
-    template: `<div
-            class="grid grid-cols-[repeat(auto-fill,minmax(148px,1fr))] gap-4"
-        >
+    template: `<div class="grid-list__grid">
             @if (isLoading()) {
                 @for (row of skeletonRows(); track row) {
                     <div class="grid-skeleton-card" aria-hidden="true">
@@ -85,7 +113,7 @@ interface GridListItem {
                                 />
                             }
                         </div>
-                        @let rating = i.rating ?? i.rating_imdb;
+                        @let rating = resolveRating(i);
                         @if (rating) {
                             <div
                                 class="rating"
@@ -103,23 +131,38 @@ interface GridListItem {
                     </mat-card>
                 } @empty {
                     <div class="grid-empty-state">
-                        <app-playlist-error-view
-                            [title]="
-                                'PORTALS.ERROR_VIEW.EMPTY_CATEGORY.TITLE'
-                                    | translate
-                            "
-                            [description]="
-                                'PORTALS.ERROR_VIEW.EMPTY_CATEGORY.DESCRIPTION'
-                                    | translate
-                            "
-                            [showActionButtons]="false"
-                            [viewType]="'EMPTY_CATEGORY'"
-                        />
+                        @if (hasActiveSearch()) {
+                            <app-playlist-error-view
+                                [title]="
+                                    'PORTALS.SEARCH_VIEW.NO_RESULTS_FOR'
+                                        | translate: { term: searchTerm() }
+                                "
+                                [description]="
+                                    'PORTALS.EMPTY_LIST_VIEW.NO_SEARCH_RESULTS'
+                                        | translate
+                                "
+                                [showActionButtons]="false"
+                                [viewType]="'NO_SEARCH_RESULTS'"
+                            />
+                        } @else {
+                            <app-playlist-error-view
+                                [title]="
+                                    'PORTALS.ERROR_VIEW.EMPTY_CATEGORY.TITLE'
+                                        | translate
+                                "
+                                [description]="
+                                    'PORTALS.ERROR_VIEW.EMPTY_CATEGORY.DESCRIPTION'
+                                        | translate
+                                "
+                                [showActionButtons]="false"
+                                [viewType]="'EMPTY_CATEGORY'"
+                            />
+                        }
                     </div>
                 }
             }
         </div>
-        @if (showPaginator() && items()?.length > 0) {
+        @if (showPaginator() && items().length > 0) {
             <mat-paginator
                 [pageIndex]="pageIndex()"
                 [length]="totalPages() * limit()"
@@ -140,18 +183,24 @@ interface GridListItem {
         ProgressCapsuleComponent,
         WatchedBadgeComponent,
     ],
+    changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class GridListComponent {
-    readonly items = input<GridListItem[]>();
-    readonly isLoading = input<boolean>();
+    readonly items = input<GridListItem[]>([]);
+    readonly isLoading = input<boolean>(false);
     readonly showPaginator = input(true);
+    readonly searchTerm = input<string>('');
     readonly itemClicked = output<GridListItem>();
     readonly pageChange = output<PageEvent>();
 
-    readonly pageIndex = input<number>();
-    readonly totalPages = input<number>();
-    readonly limit = input<number>();
-    readonly pageSizeOptions = input<number[]>();
+    readonly pageIndex = input<number>(0);
+    readonly totalPages = input<number>(0);
+    readonly limit = input<number>(25);
+    readonly pageSizeOptions = input<number[]>([]);
+    protected readonly resolveRating = resolveGridRating;
+    protected readonly hasActiveSearch = computed(
+        () => (this.searchTerm() ?? '').trim().length > 0
+    );
 
     readonly skeletonRows = computed(() => {
         const preferredCount = this.limit() ?? 12;

@@ -22,9 +22,16 @@ Core implementation:
 1. `apps/web/src/app/app.routes.ts`
 2. `libs/workspace/shell/feature/src/lib/workspace-shell/workspace-shell.component.ts`
 3. `libs/workspace/shell/feature/src/lib/workspace-shell/workspace-shell.component.html`
-4. `libs/portal/shared/util/src/lib/navigation/portal-route.utils.ts`
-5. `libs/portal/shared/util/src/lib/navigation/portal-rail-links.ts`
-6. `libs/portal/shared/ui/src/lib/navigation/portal-rail-links.component.ts`
+4. `libs/workspace/shell/feature/src/lib/workspace-shell/services/workspace-shell.facade.ts`
+5. `libs/workspace/shell/feature/src/lib/workspace-shell/services/workspace-shell-route-state.service.ts`
+6. `libs/workspace/shell/feature/src/lib/workspace-shell/services/workspace-shell-search.service.ts`
+7. `libs/workspace/shell/feature/src/lib/workspace-shell/services/workspace-shell-search-sync.service.ts`
+8. `libs/workspace/shell/feature/src/lib/workspace-shell/services/workspace-shell-header.service.ts`
+9. `libs/workspace/shell/feature/src/lib/workspace-shell/services/workspace-shell-command-palette.service.ts`
+10. `libs/workspace/shell/feature/src/lib/workspace-shell/services/workspace-shell-xtream-import.service.ts`
+11. `libs/portal/shared/util/src/lib/navigation/portal-route.utils.ts`
+12. `libs/portal/shared/util/src/lib/navigation/portal-rail-links.ts`
+13. `libs/portal/shared/ui/src/lib/navigation/portal-rail-links.component.ts`
 
 ## Route Contract
 
@@ -54,7 +61,12 @@ Provider route integration:
 3. Xtream and Stalker parent routes attach route-scoped session providers that
    bootstrap the active playlist, sync provider section state, and clean up
    provider-local state when the route is destroyed.
-4. Workspace routes no longer rely on nested provider shell components for
+4. Xtream route bootstrap is DB-first for already imported Electron playlists:
+   if the requested section has persisted categories and content, the route
+   hydrates from SQLite even when the portal status probe reports unavailable,
+   expired, or inactive. Fresh/no-cache Xtream routes still use the status probe
+   to block remote imports before the loading overlay starts.
+5. Workspace routes no longer rely on nested provider shell components for
    hidden local chrome.
 
 ## Shell Structure
@@ -62,20 +74,42 @@ Provider route integration:
 The shell is intentionally split into four persistent regions:
 
 1. Left rail:
-   1. Static workspace links for dashboard and sources.
+   1. Static workspace links for dashboard, sources, global favorites, and recently viewed.
    2. Provider-aware context links derived from the active or current playlist.
+   3. Settings remains a persistent footer shortcut in the rail.
 2. Top header:
    1. Playlist switcher.
    2. Route-aware search input and command palette trigger.
    3. Add source action.
-   4. Global favorites shortcut.
+   4. Optional playlist refresh and route-specific shortcut actions.
    5. Downloads shortcut in Electron.
-   6. Context actions menu for playlist/account or section-level actions.
 3. Main body:
    1. Optional left context panel.
    2. Main router outlet content.
 4. Optional footer:
    1. External playback session bar when a docked session is visible.
+
+`WorkspaceShellComponent` binds only to `WorkspaceShellFacade`. The facade is
+kept as a thin template-facing API and delegates ownership to component-scoped
+services:
+
+1. `WorkspaceShellRouteStateService` owns current route parsing, rail links,
+   context-panel state, dashboard startup preference, and playlist source
+   signals.
+2. `WorkspaceShellSearchService` owns the route-aware header search capability
+   and public search actions.
+3. `WorkspaceShellSearchSyncService` owns the search query signals, debounced
+   application, provider-store synchronization, and query-param sync.
+4. `WorkspaceShellHeaderService` owns playlist title/subtitle, account/info
+   actions, refresh action state, and recent-items bulk cleanup.
+5. `WorkspaceShellCommandPaletteService` owns command-palette dialog lifecycle
+   and recent-command recording.
+6. `WorkspaceShellXtreamImportService` owns Xtream import/refresh overlay
+   state and labels.
+
+When adding shell behavior, prefer placing it in the service that owns the
+nearest existing state. Keep `WorkspaceShellFacade` as a stable re-export layer
+for the template unless the template contract itself intentionally changes.
 
 ## Context Panel Rules
 
@@ -85,7 +119,7 @@ The shell decides which secondary panel to show from the current route:
    1. `WorkspaceSourcesFiltersPanelComponent`
 2. Xtream category sections (`live`, `vod`, `series`)
    1. `WorkspaceContextPanelComponent`
-3. Stalker category sections (`itv`, `vod`, `series`)
+3. Stalker category sections (`itv`, `radio`, `vod`, `series`)
    1. `WorkspaceContextPanelComponent`
 4. `/workspace/settings`
    1. `WorkspaceSettingsContextPanelComponent`
@@ -95,6 +129,12 @@ The shell decides which secondary panel to show from the current route:
 The context panel is part of the shell contract. New workspace-level routes
 should explicitly decide whether they need one rather than adding local
 sidebars inside feature pages.
+
+Xtream and Stalker category panels preserve provider/server category order by
+default. The panel header exposes a sort menu next to category search with
+`Server sorting`, `A-Z`, and `Z-A`; when alphabetical sorting is active,
+synthetic "all categories" entries stay pinned before sorted provider
+categories.
 
 ## Search And Navigation Rules
 
@@ -114,6 +154,49 @@ Rail navigation is also shell-owned:
    to the currently selected playlist so provider navigation remains available
    even outside a provider route.
 
+Command palette behavior is shell-owned but view-extensible:
+
+1. The shell resolves commands into three groups in fixed order: current view,
+   this playlist, then global.
+2. Shell-owned commands are derived from route context and current playlist
+   state; empty groups are omitted instead of rendering disabled placeholders.
+3. Workspace features contribute current-view commands through
+   `WorkspaceViewCommandService`.
+4. Header shortcut actions can opt into palette exposure by attaching palette
+   metadata through `WorkspaceHeaderContextService`.
+5. Filtering matches command labels, descriptions, and keywords, and keyboard
+   selection always lands on the first enabled command.
+6. A "Recently used" section is rendered above the standard groups when the
+   query is empty and at least one stored id resolves to a visible+enabled
+   command; ids are persisted via `RecentCommandsService` (capped at 5,
+   stored at `STORE_KEY.RecentCommands`). Storage is **not** pruned by route
+   visibility — a navigation command like `Open sources` is invisible while
+   the user is on `/workspace/sources` but the id stays in storage so it
+   reappears in the recent section after navigating away.
+7. Five "Switch player to X" commands are registered globally by
+   `WorkspacePlayerCommandsContributor`. The MPV/VLC entries are visible only
+   in Electron, and the entry matching the current `SettingsStore.player()`
+   value is disabled. The new player setting applies to the next playback
+   session; an existing stream is not re-mounted.
+
+Keyboard shortcut help is shell-owned:
+
+1. `WorkspaceKeyboardShortcutsService` is provided by `WorkspaceShellComponent`.
+   It owns the workspace-scoped `document:keydown` listener for `?` /
+   `Shift+/`.
+2. The listener ignores events from inputs, textareas, selects, and
+   content-editable elements via `isTypingInInput(...)`.
+3. `libs/portal/shared/util/src/lib/keyboard-shortcut-definitions.ts` is the
+   metadata registry for shortcuts shown in the help dialog and documented in
+   README. `keyboard-shortcuts.ts` owns the display transformation and help
+   trigger detection.
+   Shortcuts that only work through the Electron bridge, such as embedded MPV
+   controls, must set `electronOnly: true` so the PWA dialog does not advertise
+   unavailable commands.
+4. New custom shortcuts should be added to that registry when the handler is
+   added. Do not include native browser/editor behavior such as `Tab` or
+   platform text editing shortcuts.
+
 ## Maintenance Guidance
 
 Use this document as the source of truth when changing workspace shell behavior.
@@ -124,5 +207,7 @@ Use this document as the source of truth when changing workspace shell behavior.
    not duplicated inside the shell.
 3. If a provider route changes how playlist/session bootstrap works, update the
    route-session provider and shell-facing route contract together.
-4. Historical migration notes, cleanup lists, and one-off refactor steps should
+4. When adding a non-native keyboard shortcut, update the shared shortcuts
+   registry, the help dialog tests, README, and the closest behavior test.
+5. Historical migration notes, cleanup lists, and one-off refactor steps should
    stay out of this file; track them in issues or PR notes instead.

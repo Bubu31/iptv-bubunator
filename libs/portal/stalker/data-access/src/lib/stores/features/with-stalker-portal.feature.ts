@@ -2,20 +2,34 @@ import { inject } from '@angular/core';
 import {
     patchState,
     signalStoreFeature,
-    withProps,
     withMethods,
+    withProps,
     withState,
 } from '@ngrx/signals';
-import { Playlist, PlaylistMeta, STALKER_REQUEST } from 'shared-interfaces';
+import { PlaylistMeta, STALKER_REQUEST } from '@iptvnator/shared/interfaces';
 import { createLogger } from '@iptvnator/portal/shared/util';
-import { DataService } from 'services';
+import { DataService, RuntimeCapabilitiesService } from '@iptvnator/services';
 import { StalkerSessionService } from '../../stalker-session.service';
+import { toStalkerSessionPlaylist } from '../utils';
+
+type StalkerPortalWindow = Window & {
+    electron: {
+        dbCreatePlaylist: (playlist: {
+            id: string;
+            name: string;
+            macAddress: string;
+            url: string;
+            type: 'stalker';
+        }) => Promise<unknown>;
+        dbGetPlaylist: (playlistId: string) => Promise<unknown>;
+    };
+};
 
 /**
  * Portal/session state and methods.
  */
 export interface StalkerPortalState {
-    currentPlaylist: PlaylistMeta;
+    currentPlaylist: PlaylistMeta | undefined;
 }
 
 const initialPortalState: StalkerPortalState = {
@@ -42,14 +56,13 @@ export function withStalkerPortal() {
                     // Get token if it's a full stalker portal
                     let token: string | undefined;
                     let serialNumber: string | undefined;
-                    if ((playlist as Playlist).isFullStalkerPortal) {
+                    if (playlist.isFullStalkerPortal) {
                         try {
                             const result = await stalkerSession.ensureToken(
-                                playlist as Playlist
+                                toStalkerSessionPlaylist(playlist)
                             );
                             token = result.token ?? undefined;
-                            serialNumber = (playlist as Playlist)
-                                .stalkerSerialNumber;
+                            serialNumber = result.serialNumber;
                         } catch (error) {
                             logger.error('Failed to get stalker token', error);
                         }
@@ -68,12 +81,14 @@ export function withStalkerPortal() {
         withMethods(
             (
                 store,
-                dataService = inject(DataService),
-                stalkerSession = inject(StalkerSessionService)
+                stalkerSession = inject(StalkerSessionService),
+                runtime = inject(RuntimeCapabilitiesService)
             ) => ({
                 async setCurrentPlaylist(playlist: PlaylistMeta | undefined) {
                     stalkerSession.setActiveWatchdogPlaylist(
-                        (playlist as Playlist) || undefined
+                        playlist
+                            ? toStalkerSessionPlaylist(playlist)
+                            : undefined
                     );
                     patchState(store, { currentPlaylist: playlist });
 
@@ -81,19 +96,22 @@ export function withStalkerPortal() {
                     // Only sync if this is actually a Stalker playlist (has macAddress and portalUrl)
                     if (
                         playlist &&
-                        dataService.isElectron &&
+                        runtime.supportsStalkerPlaylistSqliteSync &&
                         playlist._id &&
                         playlist.macAddress &&
                         playlist.portalUrl
                     ) {
                         try {
+                            const electronApi = (window as StalkerPortalWindow)
+                                .electron;
+
                             const playlistId = String(playlist._id);
                             // Check if playlist exists in SQLite
                             const existing =
-                                await window.electron.dbGetPlaylist(playlistId);
+                                await electronApi.dbGetPlaylist(playlistId);
                             if (!existing) {
                                 // Create playlist in SQLite
-                                await window.electron.dbCreatePlaylist({
+                                await electronApi.dbCreatePlaylist({
                                     id: playlistId,
                                     name: playlist.title || '',
                                     macAddress: playlist.macAddress || '',

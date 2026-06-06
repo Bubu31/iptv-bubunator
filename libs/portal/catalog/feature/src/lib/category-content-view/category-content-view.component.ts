@@ -1,12 +1,15 @@
 import { NgComponentOutlet } from '@angular/common';
 import {
+    ChangeDetectionStrategy,
     Component,
     computed,
     DestroyRef,
+    ElementRef,
     inject,
     OnInit,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
+import { map } from 'rxjs/operators';
 import { MatIconButton } from '@angular/material/button';
 import { MatIcon } from '@angular/material/icon';
 import { MatMenuModule } from '@angular/material/menu';
@@ -42,6 +45,7 @@ interface CategoryContentItem {
     selector: 'app-category-content-view',
     templateUrl: './category-content-view.component.html',
     styleUrls: ['./category-content-view.component.scss'],
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [
         GridListComponent,
         MatIcon,
@@ -57,9 +61,14 @@ interface CategoryContentItem {
 export class CategoryContentViewComponent implements OnInit {
     private readonly activatedRoute = inject(ActivatedRoute);
     private readonly destroyRef = inject(DestroyRef);
+    private readonly hostElement = inject(ElementRef<HTMLElement>);
     private readonly router = inject(Router);
     private readonly translate = inject(TranslateService);
-    private readonly catalog = inject(PORTAL_CATALOG_FACADE) as PortalCatalogFacade<
+    private hasAppliedInitialQueryParams = false;
+    private previousSearchQuery: string | null = null;
+    private readonly catalog = inject(
+        PORTAL_CATALOG_FACADE
+    ) as PortalCatalogFacade<
         CategoryContentItem,
         CategoryContentItem,
         CategoryContentItem
@@ -77,8 +86,7 @@ export class CategoryContentViewComponent implements OnInit {
     readonly selectedItem = this.catalog.selectedItem;
     readonly totalPages = this.catalog.totalPages;
     readonly contentSortMode = this.catalog.contentSortMode;
-    readonly isPaginatedContentLoading =
-        this.catalog.isPaginatedContentLoading;
+    readonly isPaginatedContentLoading = this.catalog.isPaginatedContentLoading;
     readonly isXtreamLoadingSubtitle = computed(
         () =>
             this.catalog.provider === 'xtream' &&
@@ -95,6 +103,10 @@ export class CategoryContentViewComponent implements OnInit {
         return `${itemCount} ${itemCount === 1 ? 'item' : 'items'}`;
     });
     readonly canSortContent = computed(() => this.contentSortMode() !== null);
+    readonly searchTerm = toSignal(
+        this.activatedRoute.queryParamMap.pipe(map((p) => p.get('q') ?? '')),
+        { initialValue: '' }
+    );
     readonly selectedDetailComponent = computed(() =>
         this.selectedItem() ? this.detailComponent : null
     );
@@ -120,13 +132,47 @@ export class CategoryContentViewComponent implements OnInit {
         this.activatedRoute.queryParamMap
             .pipe(takeUntilDestroyed(this.destroyRef))
             .subscribe((params) => {
-                this.catalog.setSearchQuery?.(params.get('q') ?? '');
+                const searchQuery = params.get('q') ?? '';
+                const pageIndex = this.toPageIndex(params.get('page'));
+
+                this.catalog.setSearchQuery?.(searchQuery);
+
+                if (!this.hasAppliedInitialQueryParams) {
+                    this.hasAppliedInitialQueryParams = true;
+                    this.previousSearchQuery = searchQuery;
+                    this.catalog.setPage(pageIndex);
+                    return;
+                }
+
+                const didSearchChange =
+                    searchQuery !== this.previousSearchQuery;
+                this.previousSearchQuery = searchQuery;
+
+                if (didSearchChange) {
+                    this.catalog.setPage(0);
+                    if (params.has('page')) {
+                        this.clearPageQueryParam();
+                    }
+                    return;
+                }
+
+                this.catalog.setPage(pageIndex);
             });
     }
 
     onPageChange(event: PageEvent): void {
         this.catalog.setPage(event.pageIndex);
         this.catalog.setLimit(event.pageSize);
+        this.scrollGridToTop();
+
+        void this.router.navigate([], {
+            relativeTo: this.activatedRoute,
+            queryParams: {
+                page: event.pageIndex > 0 ? event.pageIndex + 1 : null,
+            },
+            queryParamsHandling: 'merge',
+            replaceUrl: true,
+        });
     }
 
     onItemClick(item: CategoryContentItem): void {
@@ -134,8 +180,32 @@ export class CategoryContentViewComponent implements OnInit {
         if (navigation?.length) {
             this.router.navigate(navigation, {
                 relativeTo: this.activatedRoute,
+                queryParamsHandling: 'preserve',
             });
         }
+    }
+
+    private toPageIndex(value: string | null): number {
+        const page = Number(value);
+        return Number.isInteger(page) && page > 0 ? page - 1 : 0;
+    }
+
+    private scrollGridToTop(): void {
+        const gridList = this.hostElement.nativeElement.querySelector(
+            'app-grid-list'
+        ) as HTMLElement | null;
+        gridList?.scrollTo?.({ top: 0 });
+    }
+
+    private clearPageQueryParam(): void {
+        void this.router.navigate([], {
+            relativeTo: this.activatedRoute,
+            queryParams: {
+                page: null,
+            },
+            queryParamsHandling: 'merge',
+            replaceUrl: true,
+        });
     }
 
     private openStalkerItemFromNavigationState(): void {

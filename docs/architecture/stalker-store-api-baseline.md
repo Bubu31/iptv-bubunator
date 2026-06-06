@@ -13,7 +13,7 @@ Goal: keep this public surface stable while splitting to feature stores.
 
 Direct signal properties currently exposed by `signalStore`:
 
-- `selectedContentType: 'vod' | 'itv' | 'series'`
+- `selectedContentType: 'vod' | 'itv' | 'radio' | 'series'`
 - `selectedCategoryId: string | null | undefined`
 - `selectedVodId: string | undefined`
 - `selectedSerialId: string | undefined`
@@ -21,14 +21,16 @@ Direct signal properties currently exposed by `signalStore`:
 - `limit: number`
 - `page: number`
 - `searchPhrase: string`
-- `currentPlaylist: PlaylistMeta`
+- `currentPlaylist: PlaylistMeta | undefined`
 - `totalCount: number`
 - `selectedItem: StalkerVodSource | null | undefined`
 - `vodCategories: StalkerCategoryItem[]`
 - `seriesCategories: StalkerCategoryItem[]`
 - `itvCategories: StalkerCategoryItem[]`
+- `radioCategories: StalkerCategoryItem[]`
 - `hasMoreChannels: boolean`
 - `itvChannels: StalkerItvChannel[]`
+- `radioChannels: StalkerItvChannel[]`
 - `vodSeriesSeasons: StalkerVodSeriesSeason[]`
 - `vodSeriesEpisodes: StalkerVodSeriesEpisode[]`
 - `selectedVodSeriesSeasonId: string | undefined`
@@ -36,7 +38,7 @@ Direct signal properties currently exposed by `signalStore`:
 ## Public Computed Selectors
 
 - `getTotalPages: number`
-- `getPaginatedContent: StalkerContentItem[] | undefined`
+- `getPaginatedContent: StalkerContentItem[]`
 - `isPaginatedContentLoading: boolean`
 - `isPaginatedContentFailed: unknown`
 - `getSerialSeasonsResource: StalkerSeason[]`
@@ -52,19 +54,21 @@ Direct signal properties currently exposed by `signalStore`:
 
 These are currently reachable on the store object and used internally by computed selectors:
 
-- `getCategoryResource` (resource)
+- `getCategoryResource` (computed selector with stable array output)
+- `categoryResource` (internal resource)
 - `getContentResource` (resource)
 - `serialSeasonsResource` (resource)
 - `vodSeriesSeasonsResource` (resource)
 - `makeStalkerRequest(...)`
 
 During refactor:
+
 - Keep compatibility for external callers that may read these directly.
 - If moved/renamed internally, provide facade aliases.
 
 ## Public Methods (Compatibility Contract)
 
-- `setSelectedContentType(type: 'vod' | 'itv' | 'series'): void`
+- `setSelectedContentType(type: 'vod' | 'itv' | 'radio' | 'series'): void`
 - `setSelectedCategory(id: string | number | null): void`
 - `setSelectedSerialId(id: string): void`
 - `setSelectedVodId(id: string): void`
@@ -74,14 +78,18 @@ During refactor:
 - `setCurrentPlaylist(playlist: PlaylistMeta | undefined): Promise<void>`
 - `setSelectedItem(selectedItem: StalkerVodSource | null | undefined): void`
 - `clearSelectedItem(): void`
-- `setCategories(type: 'vod' | 'series' | 'itv', categories: StalkerCategoryItem[]): void`
+- `setCategories(type: 'vod' | 'series' | 'itv' | 'radio', categories: StalkerCategoryItem[]): void`
 - `resetCategories(): void`
 - `setItvChannels(channels: StalkerItvChannel[]): void`
+- `setRadioChannels(channels: StalkerItvChannel[]): void`
 - `setSearchPhrase(phrase: string): void`
 - `fetchVodSeriesEpisodes(videoId: string, seasonId: string): Promise<StalkerVodSeriesEpisode[]>`
-- `getSelectedCategory(): { id: string | number; name: string; type: 'vod' | 'itv' | 'series' }`
+- `getSelectedCategory(): { id: string | number; name: string; type: 'vod' | 'itv' | 'radio' | 'series' }`
+  Backed by `withComputed` for compatibility, not by `withMethods`.
 - `fetchLinkToPlay(portalUrl: string, macAddress: string, cmd: string, series?: number): Promise<string>`
 - `getExpireDate(): Promise<string>`
+- `resolveItvPlayback(item: StalkerPortalItem): Promise<ResolvedPortalPlayback>`
+- `resolveRadioPlayback(item: StalkerPortalItem): Promise<ResolvedPortalPlayback>`
 - `addToFavorites(item: any, onDone?: () => void): void`
 - `removeFromFavorites(favoriteId: string, onDone?: () => void): void`
 - `fetchMovieFileId(movieId: string): Promise<string | null>`
@@ -117,10 +125,17 @@ Consumer directories sampled:
 
 - Selection IDs (`selectedVodId`, `selectedSerialId`, `selectedItvId`) are synchronized in `setSelectedItem`.
 - `setSelectedCategory(...)` resets `page` to `0`.
+- `getPaginatedContent()` and `getCategoryResource()` always return arrays,
+  even when the underlying request fails.
+- Radio stores stations separately in `radioChannels` and falls back to a
+  synthetic all-radio category when a portal does not support radio category
+  responses.
+- Request failures must surface through `isPaginatedContentFailed()` and
+  `isCategoryResourceFailed()` rather than resource reads that throw.
 - `createLinkToPlayVod(...)` continues to:
-  - support episode playback metadata
-  - append recently viewed
-  - preserve external player payload shape
+    - support episode playback metadata
+    - append recently viewed
+    - preserve external player payload shape
 - Full-portal auth path continues through `StalkerSessionService`.
 - Non-auth/simple path continues through `DataService.sendIpcEvent(STALKER_REQUEST, ...)`.
 - Resource-driven loading signals preserve existing names.

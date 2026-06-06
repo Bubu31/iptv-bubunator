@@ -1,6 +1,6 @@
 import type BetterSqlite3 from 'better-sqlite3';
-import * as schema from 'database-schema';
-import { getIptvnatorDatabasePath } from 'database-path-utils';
+import * as schema from '@iptvnator/shared/database/schema';
+import { getIptvnatorDatabasePath } from '@iptvnator/shared/database/path-utils';
 import { workerData } from 'worker_threads';
 import type { AppDatabase } from '../database/database.types';
 import {
@@ -80,6 +80,10 @@ export async function getWorkerDatabase(): Promise<AppDatabase> {
     sqlite.pragma('foreign_keys = ON');
     sqlite.pragma('journal_mode = WAL');
     sqlite.pragma('busy_timeout = 5000');
+    sqlite.pragma('synchronous = NORMAL');
+    sqlite.pragma('cache_size = -64000');
+    sqlite.pragma('temp_store = MEMORY');
+    sqlite.pragma('mmap_size = 268435456');
 
     if (isSqlTraceEnabled()) {
         trace('sql-worker', 'open', {
@@ -94,6 +98,12 @@ export async function getWorkerDatabase(): Promise<AppDatabase> {
 export function closeWorkerDatabase(): void {
     if (!sqlite) {
         return;
+    }
+
+    try {
+        sqlite.pragma('optimize');
+    } catch {
+        // Optimize is advisory; never block close on it.
     }
 
     sqlite.close();

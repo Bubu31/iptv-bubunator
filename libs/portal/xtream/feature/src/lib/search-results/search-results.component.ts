@@ -1,6 +1,7 @@
 import { KeyValuePipe } from '@angular/common';
 import {
     AfterViewInit,
+    ChangeDetectionStrategy,
     Component,
     computed,
     effect,
@@ -21,7 +22,7 @@ import {
 import { MatIcon } from '@angular/material/icon';
 import { ActivatedRoute, Router } from '@angular/router';
 import { TranslatePipe } from '@ngx-translate/core';
-import { DatabaseService } from 'services';
+import { DatabaseService } from '@iptvnator/services';
 import { ContentCardComponent } from '@iptvnator/portal/shared/ui';
 import { SearchLayoutComponent } from '@iptvnator/portal/shared/ui';
 import {
@@ -43,21 +44,19 @@ interface SearchResultsData {
 function groupResultsByPlaylistName(
     items: XtreamContentItem[]
 ): Record<string, XtreamContentItem[]> {
-    return items.reduce<Record<string, XtreamContentItem[]>>(
-        (groups, item) => {
-            const key = String(item.playlist_name);
-            if (!groups[key]) {
-                groups[key] = [];
-            }
-            groups[key].push(item);
-            return groups;
-        },
-        {}
-    );
+    return items.reduce<Record<string, XtreamContentItem[]>>((groups, item) => {
+        const key = String(item.playlist_name);
+        if (!groups[key]) {
+            groups[key] = [];
+        }
+        groups[key].push(item);
+        return groups;
+    }, {});
 }
 
 @Component({
     selector: 'app-search-results',
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [
         ContentCardComponent,
         FormsModule,
@@ -197,7 +196,7 @@ export class SearchResultsComponent implements AfterViewInit {
     }
 
     ngAfterViewInit() {
-        this.xtreamStore.setSelectedContentType(undefined);
+        this.xtreamStore.setSelectedContentType('vod');
         setTimeout(() => {
             this.searchLayoutComponent()?.focusSearchInput();
         });

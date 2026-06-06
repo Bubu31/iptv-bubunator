@@ -1,5 +1,6 @@
 import { DatePipe, DOCUMENT } from '@angular/common';
 import {
+    ChangeDetectionStrategy,
     Component,
     computed,
     DestroyRef,
@@ -20,22 +21,21 @@ import { MatIcon } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatMenu, MatMenuModule, MatMenuTrigger } from '@angular/material/menu';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { MatTooltip } from '@angular/material/tooltip';
 import { Store } from '@ngrx/store';
 import { normalizeDateLocale } from '@iptvnator/pipes';
 import { TranslatePipe, TranslateService } from '@ngx-translate/core';
-import { DialogService } from 'components';
-import { PlaylistActions } from 'm3u-state';
+import { DialogService } from '@iptvnator/ui/components';
+import { PlaylistActions } from '@iptvnator/m3u-state';
+import { PlaylistContextFacade } from '@iptvnator/playlist/shared/util';
 import {
-    PlaylistContextFacade,
-    PlaylistRefreshActionService,
-} from '@iptvnator/playlist/shared/util';
-import {
-    DatabaseService,
+    PlaylistDeleteActionService,
     PortalStatus,
     PortalStatusService,
-} from 'services';
-import { PlaylistMeta } from 'shared-interfaces';
+} from '@iptvnator/services';
+import { PlaylistMeta } from '@iptvnator/shared/interfaces';
 import { startWith } from 'rxjs';
+import { PlaylistRefreshActionService } from '../playlist-refresh-action.service';
 import { PlaylistInfoComponent } from '../recent-playlists/playlist-info/playlist-info.component';
 
 type PlaylistFilterType = 'm3u' | 'stalker' | 'xtream';
@@ -52,6 +52,7 @@ const DEFAULT_PLAYLIST_TYPE_FILTERS: Record<PlaylistFilterType, boolean> = {
     selector: 'app-playlist-switcher',
     templateUrl: './playlist-switcher.component.html',
     styleUrls: ['./playlist-switcher.component.scss'],
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [
         DatePipe,
         FormsModule,
@@ -61,6 +62,7 @@ const DEFAULT_PLAYLIST_TYPE_FILTERS: Record<PlaylistFilterType, boolean> = {
         MatInputModule,
         MatMenuModule,
         MatRippleModule,
+        MatTooltip,
         TranslatePipe,
     ],
 })
@@ -73,7 +75,7 @@ export class PlaylistSwitcherComponent {
     private readonly refreshAction = inject(PlaylistRefreshActionService);
     private readonly dialog = inject(MatDialog);
     private readonly dialogService = inject(DialogService);
-    private readonly databaseService = inject(DatabaseService);
+    private readonly playlistDeleteAction = inject(PlaylistDeleteActionService);
     private readonly snackBar = inject(MatSnackBar);
     private readonly store = inject(Store);
     private focusSearchTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -87,10 +89,19 @@ export class PlaylistSwitcherComponent {
     readonly showPlaylistInfo = input(false);
     readonly showAccountInfo = input(false);
     readonly showAddPlaylist = input(false);
+    readonly canRefreshActivePlaylist = input(false);
+    readonly isRefreshingActivePlaylist = input(false);
     readonly playlistSelected = output<string>();
     readonly playlistInfoRequested = output<void>();
     readonly accountInfoRequested = output<void>();
     readonly addPlaylistRequested = output<void>();
+    readonly refreshPlaylistRequested = output<void>();
+
+    onRefreshClick(event: Event): void {
+        event.stopPropagation();
+        event.preventDefault();
+        this.refreshPlaylistRequested.emit();
+    }
 
     readonly menuTrigger = viewChild.required<MatMenuTrigger>('menuTrigger');
     readonly playlistMenu = viewChild.required<MatMenu>('playlistMenu');
@@ -166,6 +177,14 @@ export class PlaylistSwitcherComponent {
     );
 
     readonly portalStatuses = signal<Map<string, PortalStatus>>(new Map());
+
+    /**
+     * Tracks the in-flight check round so we can cancel pending writes when
+     * the menu closes (avoiding zombie writes from a slow portal landing
+     * after the user has moved on). Status caching itself lives in
+     * PortalStatusService so it's shared across components.
+     */
+    private portalStatusAbortController: AbortController | null = null;
     readonly currentLocale = computed(() => {
         this.languageTick();
         return normalizeDateLocale(
@@ -177,6 +196,7 @@ export class PlaylistSwitcherComponent {
         this.destroyRef.onDestroy(() => {
             this.clearMenuOverlayWidth();
             this.clearSearchFocusTimeout();
+            this.cancelPortalStatusChecks();
         });
     }
 
@@ -193,6 +213,7 @@ export class PlaylistSwitcherComponent {
         this.isMenuOpen.set(false);
         this.clearMenuOverlayWidth();
         this.clearSearchFocusTimeout();
+        this.cancelPortalStatusChecks();
         if (this.hasSearchToggle()) {
             this.searchExpanded.set(false);
         }
@@ -288,14 +309,8 @@ export class PlaylistSwitcherComponent {
     private async removePlaylistConfirmed(
         playlist: PlaylistMeta
     ): Promise<void> {
-        const operationId = playlist.serverUrl
-            ? this.databaseService.createOperationId('playlist-delete')
-            : undefined;
-
-        const deleted = await this.databaseService.deletePlaylist(
-            playlist._id,
-            operationId ? { operationId } : undefined
-        );
+        const deleted =
+            await this.playlistDeleteAction.deletePlaylist(playlist);
 
         if (!deleted) {
             return;
@@ -357,7 +372,13 @@ export class PlaylistSwitcherComponent {
 
     getStatusClass(playlistId: string): string {
         const status = this.portalStatuses().get(playlistId);
-        return this.portalStatusService.getStatusClass(status || 'unavailable');
+        // No entry yet means we haven't checked (or are mid-flight without a
+        // 'checking' write). Render no status class instead of misleading the
+        // user with the red 'unavailable' dot.
+        if (!status) {
+            return '';
+        }
+        return this.portalStatusService.getStatusClass(status);
     }
 
     isSelected(playlist: PlaylistMeta): boolean {
@@ -375,33 +396,90 @@ export class PlaylistSwitcherComponent {
     }
 
     private async checkPortalStatuses(playlists: PlaylistMeta[]) {
-        const statusPromises = playlists
-            .filter(
-                (playlist) =>
-                    playlist.serverUrl && playlist.username && playlist.password
-            )
-            .map(async (playlist) => {
-                try {
-                    const status =
-                        await this.portalStatusService.checkPortalStatus(
-                            playlist.serverUrl,
-                            playlist.username,
-                            playlist.password
-                        );
-                    return { id: playlist._id, status };
-                } catch {
-                    return {
-                        id: playlist._id,
-                        status: 'unavailable' as PortalStatus,
-                    };
-                }
-            });
+        // Cancel any prior in-flight round so its results can't overwrite the
+        // new round (e.g. user closes + reopens the menu rapidly).
+        this.cancelPortalStatusChecks();
+        const controller = new AbortController();
+        this.portalStatusAbortController = controller;
 
-        const results = await Promise.all(statusPromises);
-        const statusMap = new Map(
-            results.map((result) => [result.id, result.status])
+        const xtreamPlaylists = playlists.filter(
+            (
+                playlist
+            ): playlist is PlaylistMeta & {
+                serverUrl: string;
+                username: string;
+                password: string;
+            } =>
+                Boolean(
+                    playlist.serverUrl && playlist.username && playlist.password
+                )
         );
-        this.portalStatuses.set(statusMap);
+        if (xtreamPlaylists.length === 0) {
+            return;
+        }
+
+        // Hydrate from the shared service cache + mark uncached portals as
+        // 'checking' in a single signal write so the UI flips from blank →
+        // cached/checking dots in one render, not one per playlist.
+        const next = new Map(this.portalStatuses());
+        const toFetch: (PlaylistMeta & {
+            serverUrl: string;
+            username: string;
+            password: string;
+        })[] = [];
+        for (const playlist of xtreamPlaylists) {
+            const cached = this.portalStatusService.getCachedStatus(
+                playlist.serverUrl,
+                playlist.username,
+                playlist.password
+            );
+            if (cached !== null) {
+                next.set(playlist._id, cached);
+            } else {
+                next.set(playlist._id, 'checking');
+                toFetch.push(playlist);
+            }
+        }
+        this.portalStatuses.set(next);
+
+        if (toFetch.length === 0) {
+            return;
+        }
+
+        // Stream results: each portal's dot updates as soon as ITS request
+        // resolves, independent of the slowest one. Replaces the prior
+        // Promise.all that blocked all dots on the tail latency.
+        await Promise.all(
+            toFetch.map(async (playlist) => {
+                let status: PortalStatus;
+                try {
+                    status = await this.portalStatusService.checkPortalStatus(
+                        playlist.serverUrl,
+                        playlist.username,
+                        playlist.password
+                    );
+                } catch {
+                    status = 'unavailable';
+                }
+
+                if (controller.signal.aborted) {
+                    return;
+                }
+
+                this.portalStatuses.update((current) => {
+                    const updated = new Map(current);
+                    updated.set(playlist._id, status);
+                    return updated;
+                });
+            })
+        );
+    }
+
+    private cancelPortalStatusChecks(): void {
+        if (this.portalStatusAbortController) {
+            this.portalStatusAbortController.abort();
+            this.portalStatusAbortController = null;
+        }
     }
 
     private syncMenuOverlayWidthToTrigger(): void {

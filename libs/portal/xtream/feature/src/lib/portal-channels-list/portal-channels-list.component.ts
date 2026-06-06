@@ -4,6 +4,7 @@ import {
 } from '@angular/cdk/scrolling';
 import {
     AfterViewInit,
+    ChangeDetectionStrategy,
     ChangeDetectorRef,
     Component,
     computed,
@@ -24,8 +25,11 @@ import {
     EpgProgram,
     XtreamCategory,
     XtreamItem,
-} from 'shared-interfaces';
-import { ChannelListItemComponent } from 'components';
+} from '@iptvnator/shared/interfaces';
+import {
+    ChannelListItemComponent,
+    ChannelListSkeletonComponent,
+} from '@iptvnator/ui/components';
 import {
     PortalChannelSortMode,
     sortPortalChannelItems,
@@ -34,6 +38,7 @@ import { EpgQueueService } from '@iptvnator/portal/xtream/data-access';
 import { XtreamCredentials } from '@iptvnator/portal/xtream/data-access';
 import { FavoritesService } from '@iptvnator/portal/xtream/data-access';
 import { XtreamStore } from '@iptvnator/portal/xtream/data-access';
+import { RuntimeCapabilitiesService } from '@iptvnator/services';
 
 export interface XtreamChannelListItem {
     readonly category_id?: string | number;
@@ -42,7 +47,9 @@ export interface XtreamChannelListItem {
     readonly poster_url?: string;
     readonly stream_icon?: string;
     readonly title?: string;
+    readonly type?: 'live' | 'movie' | 'series' | 'vod';
     readonly xtream_id: number;
+    readonly epg_channel_id?: string | null;
 }
 
 interface XtreamCategoryLike {
@@ -54,8 +61,10 @@ interface XtreamCategoryLike {
     selector: 'app-portal-channels-list',
     templateUrl: './portal-channels-list.component.html',
     styleUrls: ['./portal-channels-list.component.scss'],
+    changeDetection: ChangeDetectionStrategy.OnPush,
     imports: [
         ChannelListItemComponent,
+        ChannelListSkeletonComponent,
         MatIcon,
         ScrollingModule,
         TranslatePipe,
@@ -63,6 +72,7 @@ interface XtreamCategoryLike {
 })
 export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
     readonly playClicked = output<XtreamChannelListItem>();
+    readonly playbackRequested = output<XtreamChannelListItem>();
     readonly sortMode = input<PortalChannelSortMode>('server');
     readonly channelsOverride = input<XtreamChannelListItem[] | null>(null);
     readonly searchTermInput = input('');
@@ -71,9 +81,10 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
     private readonly favoritesService = inject(FavoritesService);
     private readonly epgQueueService = inject(EpgQueueService);
     private readonly route = inject(ActivatedRoute);
+    private readonly runtime = inject(RuntimeCapabilitiesService);
+    readonly supportsEpg = this.runtime.supportsEpg;
     readonly isSelectedTypeContentLoading =
         this.xtreamStore.selectedTypeContentLoading;
-    readonly loadingRows = Array.from({ length: 9 }, (_, index) => index);
     readonly channels = computed(() => {
         const override = this.channelsOverride();
         if (Array.isArray(override)) {
@@ -106,7 +117,7 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
         );
     });
 
-    favorites = new Map<number, boolean>();
+    favorites = new Map<string, boolean>();
     epgPrograms = new Map<number, EpgProgram>();
     currentProgramsProgress = new Map<number, number>();
 
@@ -116,6 +127,10 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
 
     constructor(private cdr: ChangeDetectorRef) {
         effect(() => {
+            if (!this.supportsEpg) {
+                return;
+            }
+
             const selectedItem = this.xtreamStore.selectedItem();
             const epgItems = this.xtreamStore.epgItems();
 
@@ -147,25 +162,35 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
                 .getFavorites(playlist.id)
                 .subscribe((favorites) => {
                     favorites.forEach((fav) => {
-                        this.favorites.set(fav.xtream_id, true);
+                        this.favorites.set(
+                            this.getFavoriteKey(fav.xtream_id, fav.type),
+                            true
+                        );
                     });
                 });
         }
 
-        // Subscribe to EPG results from the queue service
-        this.subscriptions.add(
-            this.epgQueueService.epgResult$.subscribe(({ streamId, items }) => {
-                const previewProgram = this.pickPreviewProgram(items);
-                if (previewProgram) {
-                    this.applyProgram(streamId, previewProgram);
-                }
-            })
-        );
+        if (this.supportsEpg) {
+            this.subscriptions.add(
+                this.epgQueueService.epgResult$.subscribe(
+                    ({ streamId, items }) => {
+                        const previewProgram = this.pickPreviewProgram(items);
+                        if (previewProgram) {
+                            this.applyProgram(streamId, previewProgram);
+                        }
+                    }
+                )
+            );
+        }
     }
 
     ngAfterViewInit() {
         const vp = this.viewport();
-        if (vp && this.xtreamStore.selectedContentType() === 'live') {
+        if (
+            this.supportsEpg &&
+            vp &&
+            this.xtreamStore.selectedContentType() === 'live'
+        ) {
             this.subscriptions.add(
                 vp.renderedRangeStream
                     .pipe(debounceTime(300))
@@ -181,6 +206,10 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
     }
 
     private loadEpgForVisibleChannels(channels: XtreamChannelListItem[]): void {
+        if (!this.supportsEpg) {
+            return;
+        }
+
         const playlist = this.xtreamStore.currentPlaylist();
         if (!playlist) return;
 
@@ -191,7 +220,10 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
         };
 
         const visibleIds = new Set<number>(channels.map((ch) => ch.xtream_id));
-        const uncachedIds: number[] = [];
+        const uncachedEntries: {
+            streamId: number;
+            epgChannelId?: string | null;
+        }[] = [];
 
         // Apply cached results immediately
         for (const channel of channels) {
@@ -208,12 +240,19 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
             }
 
             if (!this.epgPrograms.has(channel.xtream_id)) {
-                uncachedIds.push(channel.xtream_id);
+                uncachedEntries.push({
+                    streamId: channel.xtream_id,
+                    epgChannelId: channel.epg_channel_id ?? null,
+                });
             }
         }
 
-        if (uncachedIds.length > 0) {
-            this.epgQueueService.enqueue(uncachedIds, visibleIds, credentials);
+        if (uncachedEntries.length > 0) {
+            this.epgQueueService
+                .enqueue(uncachedEntries, visibleIds, credentials)
+                .catch((error) => {
+                    console.warn('EPG enqueue failed', error);
+                });
         }
     }
 
@@ -253,16 +292,55 @@ export class PortalChannelsListComponent implements AfterViewInit, OnDestroy {
             return;
         }
 
+        const favoriteKey = this.favoriteKeyFor(item);
+        const contentType = this.getContentTypeForItem(item);
+
         this.xtreamStore
-            .toggleFavorite(item.xtream_id, playlistId)
+            .toggleFavorite(item.xtream_id, playlistId, contentType)
             .then((result: boolean) => {
                 if (result) {
-                    this.favorites.set(item.xtream_id, true);
+                    this.favorites.set(favoriteKey, true);
                 } else {
-                    this.favorites.delete(item.xtream_id);
+                    this.favorites.delete(favoriteKey);
                 }
                 this.cdr.detectChanges();
             });
+    }
+
+    favoriteKeyFor(item: XtreamChannelListItem): string {
+        return this.getFavoriteKey(
+            item.xtream_id,
+            item.type ?? this.xtreamStore.selectedContentType()
+        );
+    }
+
+    private getFavoriteKey(
+        xtreamId: number,
+        type?: 'live' | 'movie' | 'series' | 'vod'
+    ): string {
+        return `${this.normalizeContentType(type)}:${xtreamId}`;
+    }
+
+    private getContentTypeForItem(
+        item: XtreamChannelListItem
+    ): 'live' | 'movie' | 'series' {
+        return this.normalizeContentType(
+            item.type ?? this.xtreamStore.selectedContentType()
+        );
+    }
+
+    private normalizeContentType(
+        type?: 'live' | 'movie' | 'series' | 'vod'
+    ): 'live' | 'movie' | 'series' {
+        if (type === 'movie' || type === 'vod') {
+            return 'movie';
+        }
+
+        if (type === 'series') {
+            return 'series';
+        }
+
+        return 'live';
     }
 
     ngOnDestroy(): void {

@@ -9,20 +9,42 @@ This file provides guidance to coding agents working in this repository.
 - Use the filename pattern `YYYY-MM-DD-short-topic.md` such as `.plans/2026-03-12-channel-filtering.md`.
 - If the intended filename already exists, append a numeric suffix such as `-2`, `-3`, and so on.
 
+## Agent Bootstrap
+
+- In a fresh worktree, run `pnpm install --frozen-lockfile` before relying on Nx project discovery, lint, test, or build commands. Without `node_modules`, `pnpm nx show projects` will fail because the local Nx modules are unavailable.
+- After dependencies are installed, verify workspace discovery with `pnpm nx show projects`.
+- Use scoped path aliases from `tsconfig.base.json` such as `@iptvnator/services`, `@iptvnator/shared/interfaces`, and `@iptvnator/ui/components`. Do not add new imports from legacy bare aliases such as `services`, `shared-interfaces`, `components`, `m3u-state`, or `database`.
+- Every Nx project should keep `scope:*`, `domain:*`, and `type:*` tags in `project.json` so `@nx/enforce-module-boundaries` remains useful for humans and agents.
+- See `docs/architecture/nx-workspace-boundaries.md` for the current Nx tag and alias policy.
+- Repository-specific skills are committed under `.codex/skills/`. If an external agent does not support skills, treat those files as concise ownership docs.
+
 ## Documentation After Changes
 
 - After implementing a meaningful change, agents must assess whether canonical repo docs need updates before considering the task complete.
 - Meaningful changes include new or changed user-visible behavior, architecture or data-flow changes, non-obvious maintenance workflows, new setup/debugging steps, and new subsystem contracts or boundaries.
 - Skip doc updates for trivial refactors with unchanged behavior, formatting-only edits, and isolated test-only changes.
 - Prefer updating an existing authoritative doc before creating a new one:
-  1. `README.md` for top-level developer or user workflows
-  2. `docs/architecture/` for architecture, ownership, and behavior contracts
-  3. the nearest module `README.md` for local usage or behavior
+    1. `README.md` for top-level developer or user workflows
+    2. `docs/architecture/` for architecture, ownership, and behavior contracts
+    3. the nearest module `README.md` for local usage or behavior
 - Repo docs are canonical even when they were originally drafted by an LLM. External wiki pages are derivative or synthesis content unless explicitly promoted back into the repo.
 - The external wiki sync is one-way by default: repo docs -> external wiki `_repo-context/`.
 - If repo docs changed and `IPTVNATOR_WIKI_VAULT` is configured, run `pnpm wiki:export --mode changed` after the doc update.
 - The wiki exporter only owns `_repo-context/` in the external vault. It must never overwrite repo docs or maintained wiki pages outside that folder.
 - Final task summaries should state whether docs were updated, which doc changed, and whether wiki export ran, was skipped, or failed.
+
+## Regression Prevention And Test Updates
+
+- Before the final summary for any feature, behavior change, bug fix, data-flow change, Electron IPC/database change, or user-visible UI workflow change, complete a test impact pass. Identify the affected projects and decide whether unit, integration, E2E, build, lint, or manual/CDP verification is required.
+- Bug fixes must normally include regression coverage that fails on the old behavior and passes with the fix. If automated coverage is not practical, document why in the final summary and include the strongest manual validation performed.
+- Feature work and behavior changes must update existing tests when assertions, fixtures, mocks, routes, or E2E flows are now stale, incomplete, or missing. Prefer extending the closest existing spec or E2E file before adding a new suite.
+- Default validation ladder:
+    1. Run targeted unit tests for directly affected projects with `pnpm nx test <project>` or existing scripts such as `pnpm run test:frontend`, `pnpm run test:backend`, or `pnpm run test:unit:ci` when the scope is broader.
+    2. Run affected E2E coverage when changing user-visible workflows, routing, persistence, playback, portals, settings, import flows, or Electron-only behavior.
+    3. Use `pnpm nx show projects --withTarget test` and `pnpm nx show projects --withTarget e2e` when project ownership or available validation targets are unclear.
+    4. Prefer specific atomized E2E targets before broad suites when they cover the changed behavior, for example `pnpm nx run web-e2e:e2e-ci--src/xtream.e2e.ts` or `pnpm nx run electron-backend-e2e:e2e-ci--src/search.e2e.ts`.
+- Electron-specific changes affecting IPC, SQLite, packaged runtime, external players, native file access, or Electron-only routes require Electron E2E coverage where available, or CDP/manual verification with `agent-browser` and the tracing flags documented below.
+- Final task summaries must list tests added or updated, validation commands run with results, and any skipped validation with the reason. For docs-only changes, state that unit/E2E validation was not required and verify the changed Markdown instead.
 
 ## Electron Debugging (CDP)
 
@@ -44,11 +66,12 @@ IPTVNATOR_TRACE_STARTUP=1 nx serve electron-backend
 ```
 
 - Narrower trace flags:
-  - `IPTVNATOR_TRACE_IPC=1` traces renderer `window.electron.*` bridge calls
-  - `IPTVNATOR_TRACE_DB=1` traces DB worker requests and request-scoped DB events
-  - `IPTVNATOR_TRACE_SQL=1` traces SQLite statements in the main process and DB worker
-  - `IPTVNATOR_TRACE_WINDOW=1` traces BrowserWindow lifecycle and unresponsive events
-  - `IPTVNATOR_TRACE_RENDERER_CONSOLE=1` mirrors renderer console output into the Electron terminal
+    - `IPTVNATOR_TRACE_IPC=1` traces renderer `window.electron.*` bridge calls
+    - `IPTVNATOR_TRACE_DB=1` traces DB worker requests and request-scoped DB events
+    - `IPTVNATOR_TRACE_SQL=1` traces SQLite statements in the main process and DB worker
+    - `IPTVNATOR_TRACE_WINDOW=1` traces BrowserWindow lifecycle and unresponsive events
+    - `IPTVNATOR_TRACE_PLAYER=1` traces external-player launch/reuse/polling debug output
+    - `IPTVNATOR_TRACE_RENDERER_CONSOLE=1` mirrors renderer console output into the Electron terminal
 
 - GPU/compositor debugging:
 
@@ -99,6 +122,7 @@ M3U playlists can contain radio channels identified by the `radio="true"` attrib
 - Radio detection in the video player template: `activeChannel.radio === 'true'` — this is a string comparison, not boolean
 
 Key files:
+
 - `libs/ui/playback/src/lib/audio-player/audio-player.component.ts` — the audio player component
 - `libs/ui/playback/src/lib/audio-player/audio-player.component.scss` — cinematic hero styling
 - `libs/playlist/m3u/feature-player/src/lib/video-player/video-player.component.html` — template conditionals for radio vs video
@@ -130,3 +154,27 @@ Key files:
   Repository-specific guidance for IPTVnator's Electron-first Xtream implementation, including feature/data-access boundaries, worker-backed DB flows, and Xtream loading/progress UX expectations.
   Use when working on Xtream routes, store/data-source logic, or Electron-backed Xtream import/search/delete behavior.
   File: `.codex/skills/xtream-electron/SKILL.md`
+
+<!-- nx configuration start-->
+<!-- Leave the start & end comments to automatically receive updates. -->
+
+## General Guidelines for working with Nx
+
+- For navigating/exploring the workspace, invoke the `nx-workspace` skill first when it is available - it has patterns for querying projects, targets, and dependencies. If it is unavailable, use `pnpm nx show projects`, `pnpm nx graph`, and project `project.json` files directly.
+- When running tasks (for example build, lint, test, e2e, etc.), always prefer running the task through `nx` (i.e. `nx run`, `nx run-many`, `nx affected`) instead of using the underlying tooling directly
+- Prefix nx commands with the workspace's package manager (e.g., `pnpm nx build`, `npm exec nx test`) - avoids using globally installed CLI
+- You have access to the Nx MCP server and its tools, use them to help the user
+- For Nx plugin best practices, check `node_modules/@nx/<plugin>/PLUGIN.md`. Not all plugins have this file - proceed without it if unavailable.
+- NEVER guess CLI flags - always check nx_docs or `--help` first when unsure
+
+## Scaffolding & Generators
+
+- For scaffolding tasks (creating apps, libs, project structure, setup), ALWAYS invoke the `nx-generate` skill FIRST before exploring or calling MCP tools
+
+## When to use nx_docs
+
+- USE for: advanced config options, unfamiliar flags, migration guides, plugin configuration, edge cases
+- DON'T USE for: basic generator syntax (`nx g @nx/react:app`), standard commands, things you already know
+- The `nx-generate` skill handles generator discovery internally - don't call nx_docs just to look up generator syntax
+
+<!-- nx configuration end-->

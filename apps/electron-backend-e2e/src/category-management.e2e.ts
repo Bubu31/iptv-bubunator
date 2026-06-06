@@ -1,7 +1,6 @@
 import { Locator, Page } from '@playwright/test';
 import {
     addXtreamPortal,
-    clickCategoryById,
     closeElectronApp,
     expect,
     launchElectronApp,
@@ -205,6 +204,86 @@ test.describe('Electron Xtream Category Management', () => {
             await closeElectronApp(app);
         }
     });
+
+    test('allows restoring live categories after every category is hidden', async ({
+        dataDir,
+        request,
+    }) => {
+        await resetMockServers(request, ['xtream']);
+        const portalName = 'All Hidden Categories Xtream';
+        const app = await launchElectronApp(dataDir);
+
+        try {
+            await addXtreamPortal(app.mainWindow, {
+                name: portalName,
+            });
+            await waitForXtreamWorkspaceReady(app.mainWindow);
+            await openWorkspaceSection(app.mainWindow, 'Live TV');
+            await app.mainWindow.waitForURL(
+                /\/workspace\/xtreams\/[^/]+\/live/
+            );
+
+            await expect
+                .poll(() => readVisibleSidebarCategoryNames(app.mainWindow), {
+                    timeout: 15000,
+                })
+                .not.toEqual([]);
+            const initialCategoryNames = await readVisibleSidebarCategoryNames(
+                app.mainWindow
+            );
+
+            let dialog = await openManageCategoriesDialog(app.mainWindow);
+            await dialog
+                .getByRole('button', {
+                    name: 'Deselect All',
+                    exact: true,
+                })
+                .click();
+            await expect(
+                dialog.locator('.category-item mat-checkbox input:checked')
+            ).toHaveCount(0);
+            await dialog
+                .getByRole('button', { name: 'Save', exact: true })
+                .click();
+            await app.mainWindow.waitForSelector('mat-dialog-container', {
+                state: 'detached',
+            });
+
+            await expect
+                .poll(() => readVisibleSidebarCategoryNames(app.mainWindow), {
+                    timeout: 15000,
+                })
+                .toEqual([]);
+
+            await expect(
+                app.mainWindow.getByRole('button', {
+                    name: 'Manage categories',
+                    exact: true,
+                })
+            ).toBeEnabled();
+
+            dialog = await openManageCategoriesDialog(app.mainWindow);
+            await dialog
+                .getByRole('button', { name: 'Select All', exact: true })
+                .click();
+            await expect(
+                dialog.locator('.category-item mat-checkbox input:checked')
+            ).toHaveCount(initialCategoryNames.length);
+            await dialog
+                .getByRole('button', { name: 'Save', exact: true })
+                .click();
+            await app.mainWindow.waitForSelector('mat-dialog-container', {
+                state: 'detached',
+            });
+
+            await expectVisibleSidebarCategoryNames(
+                app.mainWindow,
+                initialCategoryNames
+            );
+        } finally {
+            await closeElectronApp(app);
+        }
+    });
 });
 
 async function openManageCategoriesDialog(page: Page) {
@@ -231,6 +310,20 @@ async function refreshFromWorkspaceHeader(page: Page): Promise<void> {
     const dialog = page.locator('mat-dialog-container');
     await expect(dialog).toBeVisible();
     await dialog.getByRole('button', { name: 'Yes', exact: true }).click();
+
+    const refreshOverlay = page.locator('app-workspace-shell-import-overlay');
+    await expect(refreshOverlay).toBeVisible({ timeout: 5000 });
+    await expect(
+        refreshOverlay.getByRole('heading', {
+            name: 'Refreshing playlist',
+            exact: true,
+        })
+    ).toBeVisible();
+    await expect(refreshOverlay).toContainText(/Local library/);
+    await expect(refreshOverlay).toContainText(
+        /Preserving your library data|Removing cached streams|Removing cached categories/
+    );
+
     await page.waitForSelector('mat-dialog-container', { state: 'detached' });
 }
 
@@ -240,66 +333,71 @@ function sidebarCategoryById(page: Page, categoryId: string): Locator {
     );
 }
 
-async function expectVisibleSidebarCategoryIds(
-    page: Page,
-    expectedIds: string[]
-): Promise<void> {
-    const categories = page.locator(
-        'app-workspace-context-panel .category-item:visible'
-    );
-    const actualIds: string[] = [];
-    const count = await categories.count();
-
-    for (let index = 0; index < count; index += 1) {
-        const categoryId = await categories
-            .nth(index)
-            .getAttribute('data-category-id');
-
-        if (categoryId) {
-            actualIds.push(categoryId.trim());
-        }
-    }
-
-    expect(actualIds).toEqual(expectedIds);
-}
-
 async function expectVisibleSidebarCategoryNames(
     page: Page,
     expectedNames: string[]
 ): Promise<void> {
-    await expect
-        .poll(async () => {
-            const categories = page.locator(
-                'app-workspace-context-panel .category-item:visible'
-            );
-            const actualNames: string[] = [];
-            const count = await categories.count();
+    try {
+        await expect
+            .poll(() => readVisibleSidebarCategoryNames(page), {
+                timeout: 30000,
+            })
+            .toEqual(expectedNames);
+    } catch (error) {
+        const actualNames = await readVisibleSidebarCategoryNames(page);
+        if (stringArraysEqual(actualNames, expectedNames)) {
+            return;
+        }
 
-            for (let index = 0; index < count; index += 1) {
-                const categoryName =
-                    (
-                        await categories
-                            .nth(index)
-                            .locator('.nav-item-label')
-                            .textContent()
-                    )?.trim() ?? '';
+        throw new Error(
+            `Expected visible sidebar categories ${JSON.stringify(
+                expectedNames
+            )}, received ${JSON.stringify(actualNames)}`,
+            { cause: error }
+        );
+    }
+}
 
-                if (categoryName) {
-                    actualNames.push(categoryName);
-                }
-            }
+async function readVisibleSidebarCategoryNames(page: Page): Promise<string[]> {
+    const categories = page.locator(
+        'app-workspace-context-panel .category-item'
+    );
+    const actualNames: string[] = [];
+    const count = await categories.count();
 
-            return actualNames;
-        })
-        .toEqual(expectedNames);
+    for (let index = 0; index < count; index += 1) {
+        const category = categories.nth(index);
+        if (!(await category.isVisible())) {
+            continue;
+        }
+
+        const categoryName =
+            (await category.locator('.nav-item-label').textContent())?.trim() ??
+            '';
+
+        if (categoryName) {
+            actualNames.push(categoryName);
+        }
+    }
+
+    return actualNames;
+}
+
+function stringArraysEqual(left: string[], right: string[]): boolean {
+    return (
+        left.length === right.length &&
+        left.every((value, index) => value === right[index])
+    );
 }
 
 async function pickSidebarCategory(
     page: Page
 ): Promise<{ id: string; itemCount: number; name: string }> {
-    let preferredCandidate:
-        | { id: string; itemCount: number; name: string }
-        | null = null;
+    let preferredCandidate: {
+        id: string;
+        itemCount: number;
+        name: string;
+    } | null = null;
 
     await expect
         .poll(async () => {

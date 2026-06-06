@@ -14,9 +14,10 @@ handleWorkerRequest('DB_GET_RECENT_ITEMS', (playlistId: string) => ({
 
 handleWorkerRequest(
     'DB_ADD_RECENT_ITEM',
-    (contentId: number, playlistId: string) => ({
+    (contentId: number, playlistId: string, backdropUrl?: string) => ({
         contentId,
         playlistId,
+        backdropUrl,
     })
 );
 
@@ -32,5 +33,12 @@ handleWorkerRequest(
     (contentId: number, playlistId: string) => ({
         contentId,
         playlistId,
+    })
+);
+
+handleWorkerRequest(
+    'DB_REMOVE_RECENT_ITEMS_BATCH',
+    (items: { contentId: number; playlistId: string }[]) => ({
+        items,
     })
 );

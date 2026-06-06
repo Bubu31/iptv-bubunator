@@ -1,11 +1,13 @@
 import {
     Component,
+    Directive,
     input,
     output,
     signal,
 } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { RouterOutlet, provideRouter } from '@angular/router';
+import { By } from '@angular/platform-browser';
 import {
     WorkspacePortalContext,
     WorkspaceShellContextPanel,
@@ -15,6 +17,7 @@ import {
     WorkspaceHeaderBulkAction,
     WorkspaceShellFacade,
 } from './services/workspace-shell.facade';
+import { WorkspaceKeyboardShortcutsService } from '../workspace-keyboard-shortcuts/workspace-keyboard-shortcuts.service';
 
 @Component({
     selector: 'app-workspace-shell-rail',
@@ -49,17 +52,22 @@ class MockWorkspaceShellHeaderComponent {
     readonly searchPlaceholder = input('');
     readonly searchScopeLabel = input('');
     readonly searchStatusLabel = input('');
-    readonly isGlobalFavoritesActive = input(false);
     readonly headerShortcut = input<unknown>(null);
+    readonly canRefreshPlaylist = input(false);
+    readonly isRefreshingPlaylist = input(false);
     readonly isElectron = input(false);
+    readonly hasNoPlaylists = input(false);
     readonly isDownloadsView = input(false);
+    readonly hasActiveDownloads = input(false);
+    readonly isSettingsRoute = input(false);
     readonly headerBulkAction = input<WorkspaceHeaderBulkAction | null>(null);
     readonly searchChanged = output<string>();
     readonly searchSubmitted = output<string>();
     readonly commandPaletteRequested = output<void>();
+    readonly shortcutsRequested = output<void>();
     readonly addPlaylistRequested = output<void>();
-    readonly globalFavoritesRequested = output<void>();
     readonly headerShortcutRequested = output<void>();
+    readonly refreshPlaylistRequested = output<void>();
     readonly downloadsRequested = output<void>();
     readonly headerBulkActionRequested = output<void>();
     readonly playlistInfoRequested = output<void>();
@@ -75,6 +83,7 @@ class MockWorkspaceShellContextSidebarComponent {
     readonly variant = input<WorkspaceShellContextPanel>('none');
     readonly context = input<WorkspacePortalContext | null>(null);
     readonly section = input<string | null>(null);
+    readonly hasPlaylists = input(false);
 }
 
 @Component({
@@ -85,6 +94,35 @@ class MockWorkspaceShellContextSidebarComponent {
 class MockExternalPlaybackDockComponent {
     readonly session = input<unknown>(null);
     readonly closeClicked = output<void>();
+}
+
+@Component({
+    selector: 'app-playlist-drop-overlay',
+    template: '',
+    standalone: true,
+})
+class MockPlaylistDropOverlayComponent {
+    readonly state = input<unknown>({ kind: 'idle' });
+}
+
+@Directive({
+    selector: '[appPlaylistDropZone]',
+    exportAs: 'playlistDropZone',
+    standalone: true,
+})
+class MockPlaylistDropZoneDirective {
+    readonly overlayState = signal({ kind: 'idle' });
+}
+
+@Component({
+    selector: 'app-workspace-shell-import-overlay',
+    template: '',
+    standalone: true,
+})
+class MockWorkspaceShellImportOverlayComponent {}
+
+class MockWorkspaceKeyboardShortcutsService {
+    openShortcutsDialog = jest.fn();
 }
 
 class MockWorkspaceShellFacade {
@@ -108,10 +146,12 @@ class MockWorkspaceShellFacade {
     );
     readonly searchScopeLabel = signal('Movies / All Items');
     readonly searchStatusLabel = signal('');
-    readonly isGlobalFavoritesRoute = signal(false);
-    readonly isPortalFavoritesAllScope = signal(false);
     readonly headerShortcut = signal(null);
+    readonly canRefreshPlaylist = signal(false);
+    readonly isRefreshingPlaylist = signal(false);
+    readonly hasNoPlaylists = signal(false);
     readonly isDownloadsView = signal(false);
+    readonly hasActiveDownloads = signal(false);
     readonly headerBulkAction = signal<WorkspaceHeaderBulkAction | null>(null);
     readonly showContextPanel = signal(true);
     readonly contextPanel = signal<WorkspaceShellContextPanel>('settings');
@@ -121,6 +161,8 @@ class MockWorkspaceShellFacade {
     readonly showXtreamImportOverlay = signal(false);
     readonly xtreamImportCount = signal(0);
     readonly xtreamItemsToImport = signal(0);
+    readonly xtreamActiveImportCount = signal(0);
+    readonly xtreamActiveItemsToImport = signal(0);
     readonly xtreamImportTitleLabel = signal(
         'WORKSPACE.SHELL.XTREAM_IMPORT_TITLE'
     );
@@ -133,6 +175,7 @@ class MockWorkspaceShellFacade {
     readonly xtreamImportDetailLabel = signal(
         'WORKSPACE.SHELL.XTREAM_IMPORT_DETAIL_REMOTE'
     );
+    readonly xtreamImportProgressLabel = signal('');
     readonly xtreamImportPhaseTone = signal<'remote' | 'local' | null>(
         'remote'
     );
@@ -145,8 +188,8 @@ class MockWorkspaceShellFacade {
     onSearchEnter = jest.fn();
     openCommandPalette = jest.fn();
     openAddPlaylistDialog = jest.fn();
-    navigateToGlobalFavorites = jest.fn();
     runHeaderShortcut = jest.fn();
+    refreshCurrentPlaylist = jest.fn();
     openDownloadsShortcut = jest.fn();
     runHeaderBulkAction = jest.fn();
     openPlaylistInfo = jest.fn();
@@ -168,14 +211,21 @@ describe('WorkspaceShellComponent', () => {
                     imports: [
                         RouterOutlet,
                         MockExternalPlaybackDockComponent,
+                        MockPlaylistDropOverlayComponent,
+                        MockPlaylistDropZoneDirective,
                         MockWorkspaceShellContextSidebarComponent,
                         MockWorkspaceShellHeaderComponent,
+                        MockWorkspaceShellImportOverlayComponent,
                         MockWorkspaceShellRailComponent,
                     ],
                     providers: [
                         {
                             provide: WorkspaceShellFacade,
                             useValue: facade,
+                        },
+                        {
+                            provide: WorkspaceKeyboardShortcutsService,
+                            useClass: MockWorkspaceKeyboardShortcutsService,
                         },
                     ],
                 },
@@ -200,5 +250,104 @@ describe('WorkspaceShellComponent', () => {
         expect(
             fixture.nativeElement.querySelector('app-external-playback-dock')
         ).not.toBeNull();
+    });
+
+    it('renders the xtream import overlay child only when the facade flag is true', async () => {
+        const facade = new MockWorkspaceShellFacade();
+
+        await TestBed.configureTestingModule({
+            imports: [WorkspaceShellComponent],
+            providers: [provideRouter([])],
+        })
+            .overrideComponent(WorkspaceShellComponent, {
+                set: {
+                    imports: [
+                        RouterOutlet,
+                        MockExternalPlaybackDockComponent,
+                        MockPlaylistDropOverlayComponent,
+                        MockPlaylistDropZoneDirective,
+                        MockWorkspaceShellContextSidebarComponent,
+                        MockWorkspaceShellHeaderComponent,
+                        MockWorkspaceShellImportOverlayComponent,
+                        MockWorkspaceShellRailComponent,
+                    ],
+                    providers: [
+                        {
+                            provide: WorkspaceShellFacade,
+                            useValue: facade,
+                        },
+                        {
+                            provide: WorkspaceKeyboardShortcutsService,
+                            useClass: MockWorkspaceKeyboardShortcutsService,
+                        },
+                    ],
+                },
+            })
+            .compileComponents();
+
+        const fixture = TestBed.createComponent(WorkspaceShellComponent);
+        fixture.detectChanges();
+
+        expect(
+            fixture.nativeElement.querySelector(
+                'app-workspace-shell-import-overlay'
+            )
+        ).toBeNull();
+
+        facade.showXtreamImportOverlay.set(true);
+        fixture.detectChanges();
+
+        expect(
+            fixture.nativeElement.querySelector(
+                'app-workspace-shell-import-overlay'
+            )
+        ).not.toBeNull();
+    });
+
+    it('opens keyboard shortcuts when the header requests them', async () => {
+        const facade = new MockWorkspaceShellFacade();
+
+        await TestBed.configureTestingModule({
+            imports: [WorkspaceShellComponent],
+            providers: [provideRouter([])],
+        })
+            .overrideComponent(WorkspaceShellComponent, {
+                set: {
+                    imports: [
+                        RouterOutlet,
+                        MockExternalPlaybackDockComponent,
+                        MockPlaylistDropOverlayComponent,
+                        MockPlaylistDropZoneDirective,
+                        MockWorkspaceShellContextSidebarComponent,
+                        MockWorkspaceShellHeaderComponent,
+                        MockWorkspaceShellImportOverlayComponent,
+                        MockWorkspaceShellRailComponent,
+                    ],
+                    providers: [
+                        {
+                            provide: WorkspaceShellFacade,
+                            useValue: facade,
+                        },
+                        {
+                            provide: WorkspaceKeyboardShortcutsService,
+                            useClass: MockWorkspaceKeyboardShortcutsService,
+                        },
+                    ],
+                },
+            })
+            .compileComponents();
+
+        const fixture = TestBed.createComponent(WorkspaceShellComponent);
+        fixture.detectChanges();
+        const shortcutsService = fixture.debugElement.injector.get(
+            WorkspaceKeyboardShortcutsService
+        ) as unknown as MockWorkspaceKeyboardShortcutsService;
+        const header = fixture.debugElement.query(
+            By.directive(MockWorkspaceShellHeaderComponent)
+        ).componentInstance as MockWorkspaceShellHeaderComponent;
+
+        header.shortcutsRequested.emit();
+
+        expect(shortcutsService.openShortcutsDialog).toHaveBeenCalledTimes(1);
     });
 });

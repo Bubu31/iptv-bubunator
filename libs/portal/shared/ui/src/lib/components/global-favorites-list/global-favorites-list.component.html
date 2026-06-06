@@ -1,7 +1,7 @@
 <div
-    class="nav-list"
+    class="nav-list app-scrollbar"
     cdkDropList
-    [cdkDropListDisabled]="!draggable() || hasSearchTerm()"
+    [cdkDropListDisabled]="!canDragDrop()"
     (cdkDropListDropped)="onDrop($event)"
 >
     @if (enrichedChannels().length === 0) {
@@ -32,7 +32,7 @@
 
     @for (ch of enrichedChannels(); track trackByUid($index, ch)) {
         <app-channel-list-item
-            [isDraggable]="draggable() && !hasSearchTerm()"
+            [isDraggable]="canDragDrop()"
             [logo]="ch.logo"
             [name]="ch.name"
             [selected]="activeUid() === ch.uid"
@@ -40,10 +40,41 @@
             [epgProgram]="ch.currentEpgProgram"
             [progressPercentage]="ch.progressPercentage"
             [showFavoriteButton]="true"
-            [isFavorite]="true"
+            [isFavorite]="isChannelFavorite(ch)"
             [showProgramInfoButton]="true"
+            [showDetailsContextMenu]="hasChannelContextMenu(ch)"
             (clicked)="onChannelClick(ch)"
+            (activated)="onChannelActivate(ch)"
             (favoriteToggled)="onFavoriteToggled(ch)"
+            (contextMenuRequested)="onChannelContextMenu(ch, $event)"
         />
     }
 </div>
+
+<div
+    aria-hidden="true"
+    class="channel-context-menu-anchor"
+    [style.left]="contextMenuPosition().x"
+    [style.top]="contextMenuPosition().y"
+    [matMenuTriggerFor]="channelContextMenu"
+    #contextMenuTrigger="matMenuTrigger"
+></div>
+
+<mat-menu #channelContextMenu="matMenu">
+    @if (contextMenuChannel()?.m3uChannel) {
+        <button mat-menu-item (click)="openChannelDetails()">
+            <mat-icon>info</mat-icon>
+            <span>{{ 'CHANNELS.SHOW_DETAILS' | translate }}</span>
+        </button>
+    }
+    @if (mode() === 'recent') {
+        <button mat-menu-item (click)="removeContextMenuChannel()">
+            <mat-icon>delete</mat-icon>
+            <span>
+                {{
+                    'WORKSPACE.DASHBOARD.REMOVE_FROM_HISTORY' | translate
+                }}
+            </span>
+        </button>
+    }
+</mat-menu>

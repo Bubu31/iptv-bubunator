@@ -2,18 +2,20 @@ import { inject, Injectable } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Store } from '@ngrx/store';
 import { TranslateService } from '@ngx-translate/core';
-import { PlaylistActions } from 'm3u-state';
-import { DataService } from 'services';
+import { PlaylistActions } from '@iptvnator/m3u-state';
+import { DataService } from '@iptvnator/services';
 import {
     AUTO_UPDATE_PLAYLISTS,
+    createDevLogger,
     ERROR,
+    PlayerContentInfo,
     Playlist,
     PLAYLIST_PARSE_BY_URL,
     PLAYLIST_UPDATE,
     XTREAM_REQUEST,
     XTREAM_RESPONSE,
     XtreamCodeActions,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import { AppConfig } from '../../environments/environment';
 import {
     createPortalDebugRequestContext,
@@ -29,7 +31,7 @@ interface PlayerLaunchPayload {
     readonly title?: string;
     readonly url: string;
     readonly ['user-agent']?: string;
-    readonly contentInfo?: unknown;
+    readonly contentInfo?: PlayerContentInfo;
 }
 
 interface ErrorStatus {
@@ -42,9 +44,11 @@ interface ErrorStatus {
 })
 export class ElectronService extends DataService {
     private eventListeners: { [key: string]: () => void } = {};
+    private messageListeners = new Map<string, EventListener>();
     private readonly snackBar = inject(MatSnackBar);
     private readonly store = inject(Store);
     private readonly translateService = inject(TranslateService);
+    private readonly debugLog = createDevLogger('ElectronService');
     private readonly silentXtreamActions = new Set<string>([
         XtreamCodeActions.GetAccountInfo,
         XtreamCodeActions.GetLiveCategories,
@@ -57,7 +61,7 @@ export class ElectronService extends DataService {
 
     constructor() {
         super();
-        console.log('Electron service initialized...');
+        this.debugLog('Electron service initialized...');
         this.setupPlayerErrorListener();
         this.setupPortalDebugListener();
     }
@@ -116,7 +120,7 @@ export class ElectronService extends DataService {
         payload?: unknown
     ): Promise<T> {
         if (type === PLAYLIST_PARSE_BY_URL) {
-            this.fetchM3uPlaylistFromUrl(payload);
+            this.fetchM3uPlaylistFromUrl(payload as Partial<Playlist>);
             return undefined as T;
         }
 
@@ -155,7 +159,7 @@ export class ElectronService extends DataService {
                     data.url,
                     data.title ?? '',
                     data.thumbnail ?? '',
-                    data['user-agent'] ?? undefined,
+                    data['user-agent'],
                     data.referer ?? undefined,
                     data.origin ?? undefined,
                     data.contentInfo,
@@ -184,7 +188,7 @@ export class ElectronService extends DataService {
                     data.url,
                     data.title ?? '',
                     data.thumbnail ?? '',
-                    data['user-agent'] ?? undefined,
+                    data['user-agent'],
                     data.referer ?? undefined,
                     data.origin ?? undefined,
                     data.contentInfo,
@@ -218,13 +222,13 @@ export class ElectronService extends DataService {
                 this.translateService.instant(
                     'HOME.PLAYLISTS.AUTO_REFRESH_UPDATE_SUCCESS'
                 ),
-                null,
+                undefined,
                 { duration: 2000 }
             );
             return playlists as T;
         }
 
-        console.log('Unknown type', type);
+        this.debugLog('Unknown IPC event type:', type);
         return undefined as T;
     }
 
@@ -264,7 +268,11 @@ export class ElectronService extends DataService {
         }
     }
 
-    private async fetchM3uPlaylistFromUrl(payload: Partial<Playlist>) {
+    private async fetchM3uPlaylistFromUrl(payload?: Partial<Playlist>) {
+        if (!payload?.url) {
+            return;
+        }
+
         const title = payload.title?.trim() || undefined;
 
         window.electron
@@ -352,7 +360,7 @@ export class ElectronService extends DataService {
                 this.translateService.instant(
                     'HOME.PLAYLISTS.PLAYLIST_UPDATE_SUCCESS'
                 ),
-                null,
+                undefined,
                 { duration: 2000 }
             );
         } catch (error: unknown) {
@@ -471,7 +479,7 @@ export class ElectronService extends DataService {
 
             // Log error to console
             if (isSilentAction) {
-                console.log(
+                this.debugLog(
                     `Background Xtream action failed (${action ?? 'unknown'}):`,
                     normalizedMessage
                 );
@@ -556,27 +564,39 @@ export class ElectronService extends DataService {
                 unsubscribe()
             );
             this.eventListeners = {};
-        } else if (this.eventListeners[type]) {
+            // Remove all tracked window message listeners
+            this.messageListeners.forEach((listener) =>
+                window.removeEventListener('message', listener)
+            );
+            this.messageListeners.clear();
+            return;
+        }
+
+        if (this.eventListeners[type]) {
             // Unsubscribe from a specific event
             this.eventListeners[type]();
             delete this.eventListeners[type];
         }
 
-        // Also remove any window message listeners
-        window.removeEventListener('message', this.getListenerForCommand(type));
-    }
-
-    private getListenerForCommand(_command: string): EventListener {
-        void _command;
-        // This is a placeholder. In a real implementation, you would need to
-        // store the actual listener functions to be able to remove them
-        return () => undefined;
+        // Remove the window message listener registered for this command
+        const messageListener = this.messageListeners.get(type);
+        if (messageListener) {
+            window.removeEventListener('message', messageListener);
+            this.messageListeners.delete(type);
+        }
     }
 
     listenOn(command: string, callback: (...args: unknown[]) => void): void {
-        // For Electron, use window message events
-        void command;
-        window.addEventListener('message', callback);
+        // Drop any existing listener for this command so calling listenOn()
+        // again rebinds rather than accumulating duplicates.
+        const existing = this.messageListeners.get(command);
+        if (existing) {
+            window.removeEventListener('message', existing);
+        }
+
+        const listener = callback as EventListener;
+        window.addEventListener('message', listener);
+        this.messageListeners.set(command, listener);
     }
 
     getAppEnvironment(): string {

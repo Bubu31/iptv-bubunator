@@ -1,16 +1,20 @@
 import { SimpleChange } from '@angular/core';
 import { ComponentFixture, TestBed, waitForAsync } from '@angular/core/testing';
 import { TranslateModule } from '@ngx-translate/core';
-import { DataService } from 'services';
+import { DataService } from '@iptvnator/services';
+import { Channel } from '@iptvnator/shared/interfaces';
 import { HtmlVideoPlayerComponent } from './html-video-player.component';
 
 describe('HtmlVideoPlayerComponent', () => {
     let component: HtmlVideoPlayerComponent;
     let fixture: ComponentFixture<HtmlVideoPlayerComponent>;
+    const electronApi = {
+        setUserAgent: jest.fn().mockResolvedValue(true),
+    };
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     let dataService: DataService;
 
-    const TEST_CHANNEL = {
+    const TEST_CHANNEL: Channel = {
         id: '1234',
         url: 'http://test.ts',
         name: 'Test channel',
@@ -18,7 +22,17 @@ describe('HtmlVideoPlayerComponent', () => {
             title: 'News group',
         },
         http: {
+            origin: '',
+            referrer: '',
             'user-agent': 'localhost',
+        },
+        radio: 'false',
+        tvg: {
+            id: '',
+            logo: '',
+            name: '',
+            rec: '',
+            url: '',
         },
     };
 
@@ -34,10 +48,19 @@ describe('HtmlVideoPlayerComponent', () => {
     }));
 
     beforeEach(() => {
+        Object.defineProperty(window, 'electron', {
+            configurable: true,
+            value: electronApi,
+        });
+        electronApi.setUserAgent.mockClear();
         fixture = TestBed.createComponent(HtmlVideoPlayerComponent);
         component = fixture.componentInstance;
         dataService = TestBed.inject(DataService);
         fixture.detectChanges();
+    });
+
+    afterEach(() => {
+        delete (window as unknown as { electron?: unknown }).electron;
     });
 
     it('should create', () => {
@@ -55,5 +78,138 @@ describe('HtmlVideoPlayerComponent', () => {
         fixture.detectChanges();
 
         expect(component.playChannel).toHaveBeenCalledWith(TEST_CHANNEL);
+    });
+
+    it('passes channel headers and stream URL to Electron header overrides', () => {
+        jest.spyOn(
+            component.videoPlayer.nativeElement,
+            'play'
+        ).mockResolvedValue(undefined);
+
+        component.playChannel({
+            ...TEST_CHANNEL,
+            http: {
+                'user-agent': 'ChannelAgent/1.0',
+                origin: '',
+                referrer: 'https://portal.example/referrer',
+            },
+            radio: 'false',
+            url: 'https://stream.example/video.mp4',
+        });
+
+        expect(electronApi.setUserAgent).toHaveBeenCalledWith(
+            'ChannelAgent/1.0',
+            'https://portal.example/referrer',
+            'https://stream.example/video.mp4'
+        );
+    });
+
+    it('clears Electron header overrides for channels without custom headers', () => {
+        jest.spyOn(
+            component.videoPlayer.nativeElement,
+            'play'
+        ).mockResolvedValue(undefined);
+
+        component.playChannel({
+            ...TEST_CHANNEL,
+            http: {
+                'user-agent': '',
+                origin: '',
+                referrer: '',
+            },
+            radio: 'false',
+            url: 'https://stream.example/video.mp4',
+        });
+
+        expect(electronApi.setUserAgent).toHaveBeenCalledWith(
+            '',
+            '',
+            'https://stream.example/video.mp4'
+        );
+    });
+
+    it('emits a playback issue when the native video element reports an unsupported source', () => {
+        const issues: unknown[] = [];
+        component.channel = TEST_CHANNEL;
+        component.playbackIssue.subscribe((issue) => issues.push(issue));
+
+        Object.defineProperty(component.videoPlayer.nativeElement, 'error', {
+            configurable: true,
+            value: {
+                code: 4,
+                message: 'No compatible source was found',
+            },
+        });
+
+        component.videoPlayer.nativeElement.dispatchEvent(new Event('error'));
+
+        expect(issues).toEqual([
+            expect.objectContaining({
+                code: 'unsupported-container',
+                source: 'native',
+                sourceUrl: 'http://test.ts',
+                externalFallbackRecommended: true,
+            }),
+        ]);
+    });
+
+    it('does not emit a playback issue when HLS.js reports a recoverable error', () => {
+        const issues: unknown[] = [];
+        component.playbackIssue.subscribe((issue) => {
+            if (issue) issues.push(issue);
+        });
+
+        (
+            component as unknown as {
+                handleHlsError: (
+                    url: string,
+                    data: {
+                        type: string;
+                        details: string;
+                        fatal: boolean;
+                        error?: Error;
+                    }
+                ) => void;
+            }
+        ).handleHlsError('https://example.com/live/playlist.m3u8', {
+            type: 'networkError',
+            details: 'fragLoadError',
+            fatal: false,
+            error: new Error('segment retry'),
+        });
+
+        expect(issues).toEqual([]);
+    });
+
+    it('keeps raw HLS error object context in emitted playback issue details', () => {
+        const issues: Array<{ details?: string }> = [];
+        component.playbackIssue.subscribe((issue) => {
+            if (issue) issues.push(issue);
+        });
+
+        (
+            component as unknown as {
+                handleHlsError: (
+                    url: string,
+                    data: {
+                        type: string;
+                        details: string;
+                        fatal: boolean;
+                        error?: unknown;
+                    }
+                ) => void;
+            }
+        ).handleHlsError('https://example.com/live/playlist.m3u8', {
+            type: 'networkError',
+            details: 'manifestLoadError',
+            fatal: true,
+            error: {
+                context: 'xhr setup failed',
+                status: 0,
+            },
+        });
+
+        expect(issues[0].details).toContain('xhr setup failed');
+        expect(issues[0].details).toContain('"status":0');
     });
 });

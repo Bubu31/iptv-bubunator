@@ -32,8 +32,13 @@
         <div class="player-shell__viewport">
             <app-web-player-view
                 [streamUrl]="streamUrl()"
+                [title]="title()"
+                [playback]="playback()"
                 [startTime]="startTime()"
                 (timeUpdate)="onTimeUpdate($event)"
+                (externalFallbackRequested)="
+                    onExternalFallbackRequested($event)
+                "
             />
         </div>
     </section>

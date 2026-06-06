@@ -2,7 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { Router } from '@angular/router';
 import { EpgService } from '@iptvnator/epg/data-access';
-import { resolveM3uCatchupUrl } from 'm3u-utils';
+import { resolveM3uCatchupUrl } from '@iptvnator/shared/m3u-utils';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { Store } from '@ngrx/store';
 import { StorageMap } from '@ngx-pwa/local-storage';
@@ -11,12 +11,14 @@ import {
     EMPTY,
     filter,
     firstValueFrom,
+    from,
     map,
+    mergeMap,
     switchMap,
     tap,
     withLatestFrom,
 } from 'rxjs';
-import { DataService, PlaylistsService } from 'services';
+import { DataService, PlaylistsService } from '@iptvnator/services';
 import {
     OPEN_MPV_PLAYER,
     OPEN_VLC_PLAYER,
@@ -24,7 +26,7 @@ import {
     Playlist,
     STORE_KEY,
     VideoPlayer,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
 import {
     ChannelActions,
     EpgActions,
@@ -37,6 +39,7 @@ import {
     selectChannels,
     selectFavorites,
 } from './selectors';
+import { resolveChannelEpgLookupKey } from './channel-epg-lookup.util';
 import { buildExternalPlayerPayload } from './external-player-payload.util';
 
 @Injectable({ providedIn: 'any' })
@@ -152,24 +155,34 @@ export class PlaylistEffects {
                 const { channel } = action;
 
                 // Use modern EPG service to get channel programs
-                const channelId = channel.tvg?.id || channel.name;
+                const channelId = resolveChannelEpgLookupKey(channel);
                 if (channelId) {
                     this.epgService.getChannelPrograms(channelId);
                 }
 
-                // Set user agent if specified on channel
-                if (channel.http['user-agent']) {
-                    window.electron?.setUserAgent(
-                        channel.http['user-agent'],
-                        channel.http.referrer
-                    );
-                }
+                void window.electron
+                    ?.setUserAgent(
+                        channel.http?.['user-agent'],
+                        channel.http?.referrer,
+                        channel.url
+                    )
+                    .catch((error: unknown) => {
+                        console.warn(
+                            '[PlaylistEffects] Failed to configure Electron request headers:',
+                            error
+                        );
+                    });
 
                 firstValueFrom(this.storage.get(STORE_KEY.Settings)).then(
                     (settings: any) => {
+                        const shouldOpenExternalPlayer =
+                            !settings?.openStreamOnDoubleClick ||
+                            action.startPlayback === true;
+
                         if (
                             settings &&
                             Object.keys(settings).length > 0 &&
+                            shouldOpenExternalPlayer &&
                             settings.player === VideoPlayer.MPV &&
                             channel.radio !== 'true'
                         ) {
@@ -183,6 +196,7 @@ export class PlaylistEffects {
                         } else if (
                             settings &&
                             Object.keys(settings).length > 0 &&
+                            shouldOpenExternalPlayer &&
                             settings.player === VideoPlayer.VLC &&
                             channel.radio !== 'true'
                         )
@@ -276,12 +290,14 @@ export class PlaylistEffects {
     parsePlaylist$ = createEffect(() => {
         return this.actions$.pipe(
             ofType(PlaylistActions.parsePlaylist),
-            map((action) =>
-                this.playlistsService.handlePlaylistParsing(
-                    action.uploadType,
-                    action.playlist,
-                    action.title,
-                    action.path
+            mergeMap((action) =>
+                from(
+                    this.playlistsService.handlePlaylistParsing(
+                        action.uploadType,
+                        action.playlist,
+                        action.title,
+                        action.path
+                    )
                 )
             ),
             map((playlist) =>

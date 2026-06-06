@@ -15,7 +15,7 @@ import { MatIcon } from '@angular/material/icon';
 import { MatTooltip } from '@angular/material/tooltip';
 import { TranslatePipe } from '@ngx-translate/core';
 import { EpgItemDescriptionComponent } from '@iptvnator/ui/epg';
-import { EpgProgram } from 'shared-interfaces';
+import { EpgProgram } from '@iptvnator/shared/interfaces';
 
 @Component({
     selector: 'app-channel-list-item',
@@ -54,6 +54,7 @@ export class ChannelListItemComponent {
     readonly auxActionTooltip = input('');
 
     readonly clicked = output<void>();
+    readonly activated = output<void>();
     readonly favoriteToggled = output<MouseEvent>();
     readonly auxActionClicked = output<MouseEvent>();
     readonly contextMenuRequested = output<MouseEvent>();
@@ -85,6 +86,18 @@ export class ChannelListItemComponent {
     onAuxActionClick(event: MouseEvent): void {
         event.stopPropagation();
         this.auxActionClicked.emit(event);
+    }
+
+    onClick(event?: MouseEvent): void {
+        if ((event?.detail ?? 1) > 1) {
+            return;
+        }
+
+        this.clicked.emit();
+    }
+
+    onDoubleClick(): void {
+        this.activated.emit();
     }
 
     onContextMenu(event: MouseEvent): void {

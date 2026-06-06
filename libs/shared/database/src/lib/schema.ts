@@ -72,6 +72,12 @@ export const categories = sqliteTable(
         playlistTypeXtreamUnique: uniqueIndex(
             'categories_playlist_type_xtream_unique'
         ).on(table.playlistId, table.type, table.xtreamId),
+        // Partial covering index for visible categories — see connection.ts
+        // for the full rationale. SQLite can satisfy joins + hidden filter
+        // directly from this index for the dashboard / search queries.
+        visibleIdx: index('idx_categories_visible')
+            .on(table.id, table.playlistId, table.type)
+            .where(sql`hidden = 0`),
     })
 );
 
@@ -87,6 +93,7 @@ export const content = sqliteTable(
         rating: text('rating'),
         added: text('added'),
         posterUrl: text('poster_url'),
+        backdropUrl: text('backdrop_url'),
         epgChannelId: text('epg_channel_id'),
         tvArchive: integer('tv_archive'),
         tvArchiveDuration: integer('tv_archive_duration'),
@@ -128,6 +135,10 @@ export const recentlyViewed = sqliteTable(
         ).on(table.contentId, table.playlistId),
         playlistIdx: index('recently_viewed_playlist_idx').on(table.playlistId),
         viewedAtIdx: index('recently_viewed_viewed_at_idx').on(table.viewedAt),
+        playlistViewedIdx: index('recently_viewed_playlist_viewed_idx').on(
+            table.playlistId,
+            sql`${table.viewedAt} DESC`
+        ),
     })
 );
 
@@ -152,6 +163,11 @@ export const favorites = sqliteTable(
         ).on(table.contentId, table.playlistId),
         playlistIdx: index('favorites_playlist_idx').on(table.playlistId),
         contentIdx: index('favorites_content_idx').on(table.contentId),
+        playlistPositionIdx: index('favorites_playlist_position_idx').on(
+            table.playlistId,
+            table.position,
+            sql`${table.addedAt} DESC`
+        ),
     })
 );
 
@@ -240,6 +256,9 @@ export const playbackPositions = sqliteTable(
             table.seriesXtreamId
         ),
         updatedIdx: index('playback_positions_updated_idx').on(table.updatedAt),
+        playlistUpdatedIdx: index(
+            'playback_positions_playlist_updated_idx'
+        ).on(table.playlistId, sql`${table.updatedAt} DESC`),
     })
 );
 

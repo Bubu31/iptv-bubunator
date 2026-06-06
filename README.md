@@ -17,23 +17,24 @@ The application is a cross-platform, open-source project built with Electron and
 
 ⚠️ Note: IPTVnator does not provide any playlists or other digital content. The channels and pictures in the screenshots are for demonstration purposes only.
 
-![IPTVnator: Channels list, player and epg list](./iptv-dark-theme.png)
+![IPTVnator: Channels list, player and epg list](./apps/website/public/screenshots/screenshot-player.webp)
 
 ## Features
 
 - M3u and M3u8 playlist support 📺
 - Radio playlist support with dedicated audio player 📻
 - Xtream Code (XC) and Stalker portal (STB) support
-- External player support - MPV, VLC
+- External player support - MPV and VLC; macOS accepts `mpv.app` / `VLC.app` bundle paths. IINA can be launched via its executable path on macOS (best-effort: controls and position polling are MPV IPC only)
 - Add playlists from the file system or remote URLs 📂
 - Automatic playlist updates on application startup
 - Channel search functionality 🔍
 - EPG support (TV Guide) with detailed information
 - TV archive/catchup/timeshift functionality
 - Group-based channel list
-- Read-only M3U channel details from the channel context menu
+- Read-only M3U channel details from channel context menus, including favorites and recently viewed
 - Favorite channels management
 - Global favorites aggregated from all playlists
+- Recently viewed live channel removal from row actions and context menus
 - HTML video player with HLS.js support or Video.js-based player
 - Internationalization with support for 16 languages:
     - Arabic
@@ -54,21 +55,72 @@ The application is a cross-platform, open-source project built with Electron and
     - Polish
 - Custom "User Agent" header configuration for playlists
 - Light and Dark themes
-- Docker version available for self-hosting
+- Docker image available for self-hosting the PWA and web backend together
+
+## Keyboard shortcuts
+
+Press `?` or `Shift+/` in the workspace to open the in-app shortcuts list.
+
+| Area | Shortcut | Action |
+| --- | --- | --- |
+| Global | `Ctrl/Cmd+K` | Open command palette |
+| Global | `Ctrl/Cmd+F` | Open global search in the desktop app |
+| Global | `Ctrl/Cmd+R` | Open recently viewed in the desktop app |
+| Global | `Enter` in workspace search | Submit the current search |
+| Navigation | `Ctrl/Cmd+B` | Toggle the live sidebar |
+| Navigation | `0-9` | Select an M3U channel by number |
+| Playback | `Space` / `K` | Play or pause embedded MPV playback in the desktop app |
+| Playback | `F` | Toggle embedded MPV fullscreen in the desktop app |
+| Playback | `ArrowLeft` / `ArrowRight` | Seek embedded MPV playback by 5 seconds in the desktop app |
+| Playback | `ArrowUp` / `ArrowDown` | Adjust volume by 5% |
+| Playback | `M` | Mute audio |
+| Dialogs and lists | `ArrowUp` / `ArrowDown` | Move command palette selection |
+| Dialogs and lists | `Enter` | Run the selected command or open a focused item |
+| Dialogs and lists | `Escape` | Close dialogs and dismiss overlays |
 
 ## Screenshots:
 
-|                 Welcome screen: Playlists overview                 | Main player interface with channels sidebar and video player  |
-| :----------------------------------------------------------------: | :-----------------------------------------------------------: |
-|       ![Welcome screen: Playlists overview](./playlists.png)       |   ![Sidebar with channel and video player](./iptv-main.png)   |
-|            Welcome screen: Add playlist via file upload            |             Welcome screen: Add playlist via URL              |
-| ![Welcome screen: Add playlist via file upload](./iptv-upload.png) | ![Welcome screen: Add playlist via URL](./upload-via-url.png) |
-|              EPG Sidebar: TV guide on the right side               |                 General application settings                  |
-|         ![EPG: TV guide on the right side](./iptv-epg.png)         |         ![General app settings](./iptv-settings.png)          |
-|                         Playlist settings                          |
-|         ![Playlist settings](./iptv-playlist-settings.png)         |                                                               |
+| Dashboard with recently watched content | Live channels with inline player and EPG |
+| :-------------------------------------: | :--------------------------------------: |
+| ![Dashboard with recently watched content](./apps/website/public/screenshots/dashboard-with-content.webp) | ![Live channels with inline player and EPG](./apps/website/public/screenshots/screenshot-player.webp) |
+| Add playlist dialog for M3U, Xtream, and Stalker | Live category channel list |
+| ![Add playlist dialog for M3U, Xtream, and Stalker](./apps/website/public/screenshots/add-playlist.webp) | ![Live category channel list](./apps/website/public/screenshots/channels-view.webp) |
+| Global search across live TV, movies, and series | Manage visible live categories |
+| ![Global search across live TV, movies, and series](./apps/website/public/screenshots/global-search.webp) | ![Manage visible live categories](./apps/website/public/screenshots/manage-categories.webp) |
+| Movie category grid with sorting and pagination | Recently added movies and series |
+| ![Movie category grid with sorting and pagination](./apps/website/public/screenshots/xtream-category-view.webp) | ![Recently added movies and series](./apps/website/public/screenshots/xtream-recently-added.webp) |
+| VOD details with playback and download actions | Download manager |
+| ![VOD details with playback and download actions](./apps/website/public/screenshots/vod-details.webp) | ![Download manager](./apps/website/public/screenshots/download-manager.webp) |
+| Multi-channel EPG grid | External MPV player support |
+| ![Multi-channel EPG grid](./apps/website/public/screenshots/multi-epg-view.webp) | ![External MPV player support](./apps/website/public/screenshots/external-player-support-mpv.webp) |
+| Radio playback with dedicated audio player | Light theme |
+| ![Radio playback with dedicated audio player](./apps/website/public/screenshots/radio-feature.webp) | ![Light theme](./apps/website/public/screenshots/light-theme.webp) |
+| Application settings | |
+| ![Application settings](./apps/website/public/screenshots/settings.webp) | |
 
 _Note: First version of the application which was developed as a PWA is available in an extra git branch._
+
+## Self-hosted PWA
+
+The Docker setup builds the Angular PWA and the monorepo web backend into one
+image. The backend handles remote M3U parsing plus Xtream and Stalker proxy
+requests under `/api`, so a separate `4gray/iptvnator-backend` container is not
+required for the default self-hosted flow.
+
+```bash
+docker compose -f docker/docker-compose.yml up --build -d
+```
+
+The application is available at <http://localhost:4333>. See
+[`docker/docker-compose.yml`](./docker/docker-compose.yml) for the ready-to-run
+compose file and [`docker/README.md`](./docker/README.md) for environment
+variables, reverse proxy notes, PWA limitations, and build details.
+
+The self-hosted image runs the browser PWA rather than the Electron desktop app:
+EPG/XMLTV panels, Embedded MPV, managed MPV/VLC launching, the download manager,
+and Electron remote-control features are not available there. If browser
+playback fails, copy the stream URL and open it manually in an external player
+such as MPV, VLC, or IINA.
 
 ## Download
 
@@ -207,6 +259,18 @@ The equivalent Nx command is:
 $ nx serve electron-backend
 ```
 
+To start Electron with an empty, isolated data directory instead of your normal
+`~/.iptvnator` folder, set `IPTVNATOR_E2E_DATA_DIR` for that run:
+
+```
+$ rm -rf .tmp/iptvnator-empty && mkdir -p .tmp/iptvnator-empty
+$ IPTVNATOR_E2E_DATA_DIR="$PWD/.tmp/iptvnator-empty" pnpm run serve:backend
+```
+
+This redirects the SQLite database, Electron user data, and local config under
+the given directory. Delete that directory whenever you want a fresh empty
+state.
+
 If you need to debug renderer freezes or GPU/compositor issues in Electron, you
 can disable hardware acceleration for a run:
 
@@ -255,6 +319,10 @@ $ pnpm run serve:frontend
 ## Disclaimer
 
 **IPTVnator doesn't provide any playlists or other digital content.**
+
+## Trademark
+
+The name **"IPTVnator"** and the IPTVnator logo are unregistered trademarks of the project owner. The MIT license covers the source code only — it does **not** grant rights to the name or logo. Forks and redistributions (including app-store submissions) must use a different name and their own icon. See [TRADEMARK.md](./TRADEMARK.md) for details.
 
 <!-- ALL-CONTRIBUTORS-BADGE:START - Do not remove or modify this section -->
 

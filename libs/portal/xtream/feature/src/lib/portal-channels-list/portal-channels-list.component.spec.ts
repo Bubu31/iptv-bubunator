@@ -5,10 +5,15 @@ import { ActivatedRoute } from '@angular/router';
 import { TranslateService } from '@ngx-translate/core';
 import { of, Subject } from 'rxjs';
 import {
+    FavoriteItem,
     EpgQueueService,
     FavoritesService,
     XtreamStore,
 } from '@iptvnator/portal/xtream/data-access';
+import {
+    RuntimeCapabilitiesService,
+    SettingsStore,
+} from '@iptvnator/services';
 import { PortalChannelsListComponent } from './portal-channels-list.component';
 
 function buildEpgItem(params: {
@@ -35,6 +40,8 @@ function buildEpgItem(params: {
 }
 
 describe('PortalChannelsListComponent', () => {
+    const testWindow = window as unknown as { electron?: unknown };
+    const originalElectron = testWindow.electron;
     let fixture: ComponentFixture<PortalChannelsListComponent>;
     const selectedChannels = signal<unknown[]>([]);
     const selectedItem = signal<unknown>(null);
@@ -52,11 +59,26 @@ describe('PortalChannelsListComponent', () => {
         currentPlaylist,
         selectedCategoryId,
         setSelectedCategory: jest.fn(),
+        toggleFavorite: jest.fn().mockResolvedValue(true),
     };
     const epgResults$ = new Subject<{ streamId: number; items: unknown[] }>();
+    const favoritesService = {
+        getFavorites: jest.fn().mockReturnValue(of([] as FavoriteItem[])),
+    };
+    const epgQueueService = {
+        epgResult$: epgResults$,
+        getCached: jest.fn().mockReturnValue(null),
+        enqueue: jest.fn(),
+    };
 
     beforeEach(async () => {
+        Object.defineProperty(window, 'electron', {
+            configurable: true,
+            writable: true,
+            value: { platform: 'darwin' },
+        });
         storeSignals.setSelectedCategory.mockClear();
+        storeSignals.toggleFavorite.mockClear();
         selectedChannels.set([]);
         selectedItem.set(null);
         epgItems.set([]);
@@ -64,6 +86,9 @@ describe('PortalChannelsListComponent', () => {
         selectedContentType.set('live');
         currentPlaylist.set(null);
         selectedCategoryId.set(1);
+        favoritesService.getFavorites.mockReturnValue(of([] as FavoriteItem[]));
+        epgQueueService.getCached.mockReturnValue(null);
+        epgQueueService.enqueue.mockClear();
 
         await TestBed.configureTestingModule({
             imports: [PortalChannelsListComponent, NoopAnimationsModule],
@@ -100,16 +125,24 @@ describe('PortalChannelsListComponent', () => {
                 },
                 {
                     provide: FavoritesService,
-                    useValue: {
-                        getFavorites: jest.fn().mockReturnValue(of([])),
-                    },
+                    useValue: favoritesService,
                 },
                 {
                     provide: EpgQueueService,
+                    useValue: epgQueueService,
+                },
+                {
+                    provide: RuntimeCapabilitiesService,
                     useValue: {
-                        epgResult$: epgResults$,
-                        getCached: jest.fn().mockReturnValue(null),
-                        enqueue: jest.fn(),
+                        get supportsEpg() {
+                            return Boolean(window.electron);
+                        },
+                    },
+                },
+                {
+                    provide: SettingsStore,
+                    useValue: {
+                        openStreamOnDoubleClick: signal(false),
                     },
                 },
                 {
@@ -128,6 +161,11 @@ describe('PortalChannelsListComponent', () => {
 
     afterEach(() => {
         jest.useRealTimers();
+        Object.defineProperty(window, 'electron', {
+            configurable: true,
+            writable: true,
+            value: originalElectron,
+        });
     });
 
     it('renders a loading placeholder instead of the empty state while xtream live content is still loading', () => {
@@ -220,5 +258,121 @@ describe('PortalChannelsListComponent', () => {
             })
         );
         expect(component.currentProgramsProgress.get(50)).toBeCloseTo(50, 1);
+    });
+
+    it('does not derive or subscribe to row EPG previews in browser/PWA mode', () => {
+        Object.defineProperty(window, 'electron', {
+            configurable: true,
+            writable: true,
+            value: undefined,
+        });
+        selectedTypeContentLoading.set(false);
+        selectedChannels.set([
+            {
+                title: 'Cartoon Network',
+                xtream_id: 50,
+            },
+        ]);
+        selectedItem.set({ xtream_id: 50 });
+        epgItems.set([
+            buildEpgItem({
+                id: 'current',
+                title: 'Current Show',
+                start: new Date(Date.now() - 60_000).toISOString(),
+                stop: new Date(Date.now() + 60_000).toISOString(),
+                startTimestamp: Math.floor((Date.now() - 60_000) / 1000),
+                stopTimestamp: Math.floor((Date.now() + 60_000) / 1000),
+            }),
+        ]);
+
+        fixture.destroy();
+        fixture = TestBed.createComponent(PortalChannelsListComponent);
+        fixture.detectChanges();
+
+        epgResults$.next({
+            streamId: 50,
+            items: [
+                buildEpgItem({
+                    id: 'queued-current',
+                    title: 'Queued Current Show',
+                    start: new Date(Date.now() - 60_000).toISOString(),
+                    stop: new Date(Date.now() + 60_000).toISOString(),
+                    startTimestamp: Math.floor((Date.now() - 60_000) / 1000),
+                    stopTimestamp: Math.floor((Date.now() + 60_000) / 1000),
+                }),
+            ],
+        });
+
+        const pwaComponent = fixture.componentInstance;
+        expect(pwaComponent.supportsEpg).toBe(false);
+        expect(pwaComponent.epgPrograms.size).toBe(0);
+        expect(pwaComponent.currentProgramsProgress.size).toBe(0);
+    });
+
+    it('does not mark a live item as favorite when only a colliding movie ID is favorited', () => {
+        favoritesService.getFavorites.mockReturnValue(
+            of([
+                {
+                    content_id: 42,
+                    playlist_id: 'playlist-1',
+                    type: 'movie',
+                    title: 'Krypton',
+                    category_id: 7,
+                    xtream_id: 290,
+                },
+            ] satisfies FavoriteItem[])
+        );
+        selectedTypeContentLoading.set(false);
+        selectedChannels.set([
+            {
+                title: 'SE: V Film Premiere FHD',
+                type: 'live',
+                xtream_id: 290,
+            },
+        ]);
+        currentPlaylist.set({
+            id: 'playlist-1',
+            password: 'secret',
+            serverUrl: 'http://demo.example',
+            username: 'demo',
+        });
+
+        fixture.detectChanges();
+
+        const component = fixture.componentInstance;
+        expect(component.favorites.get('movie:290')).toBe(true);
+        expect(component.favorites.get('live:290')).toBeUndefined();
+        expect(
+            component.favoriteKeyFor({
+                title: 'SE: V Film Premiere FHD',
+                type: 'live',
+                xtream_id: 290,
+            })
+        ).toBe('live:290');
+    });
+
+    it('passes the live content type when toggling a channel favorite', async () => {
+        selectedTypeContentLoading.set(false);
+        currentPlaylist.set({
+            id: 'playlist-1',
+            password: 'secret',
+            serverUrl: 'http://demo.example',
+            username: 'demo',
+        });
+
+        fixture.detectChanges();
+
+        fixture.componentInstance.toggleFavorite(new MouseEvent('click'), {
+            title: 'Cartoon Network',
+            xtream_id: 253,
+        });
+        await Promise.resolve();
+
+        expect(storeSignals.toggleFavorite).toHaveBeenCalledWith(
+            253,
+            'playlist-1',
+            'live'
+        );
+        expect(fixture.componentInstance.favorites.get('live:253')).toBe(true);
     });
 });

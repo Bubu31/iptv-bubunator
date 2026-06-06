@@ -13,68 +13,92 @@ import {
     signal,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
+import { MatButtonModule } from '@angular/material/button';
+import { MatIconModule } from '@angular/material/icon';
+import { MatTooltipModule } from '@angular/material/tooltip';
 import { ActivatedRoute, Router } from '@angular/router';
 import { Store } from '@ngrx/store';
 import { StorageMap } from '@ngx-pwa/local-storage';
 import { TranslatePipe } from '@ngx-translate/core';
-import { ResizableDirective } from 'components';
-import { isM3uCatchupPlaybackSupported } from 'm3u-utils';
+import { ResizableDirective } from '@iptvnator/ui/components';
+import { isM3uCatchupPlaybackSupported } from '@iptvnator/shared/m3u-utils';
 import { PlaylistContextFacade } from '@iptvnator/playlist/shared/util';
 import {
     COMPONENT_OVERLAY_REF,
+    EpgDateNavigationDirection,
     EpgListComponent,
+    getTodayEpgDateKey,
     MultiEpgContainerComponent,
+    shiftEpgDateKey,
 } from '@iptvnator/ui/epg';
 import {
     ChannelActions,
     PlaylistActions,
+    buildExternalPlayerPayload,
     selectActive,
     selectActivePlaybackUrl,
     selectChannels,
     selectChannelsLoading,
     selectCurrentEpgProgram,
-} from 'm3u-state';
+} from '@iptvnator/m3u-state';
 import {
     firstValueFrom,
     Observable,
     Subscription,
     combineLatest,
-    combineLatestWith,
-    distinctUntilChanged,
     filter,
     map,
     startWith,
-    switchMap,
     take,
 } from 'rxjs';
 import {
     getAdjacentChannelItem,
     getChannelItemByNumber,
+    isTypingInInput,
     isWorkspaceLayoutRoute,
+    LiveEpgPanelState,
+    LiveSidebarState,
+    persistLiveEpgPanelState,
+    persistLiveSidebarState,
     PORTAL_EXTERNAL_PLAYBACK,
+    restoreLiveEpgPanelState,
+    restoreLiveSidebarState,
     WorkspaceHeaderContextService,
 } from '@iptvnator/portal/shared/util';
 import { PortalEmptyStateComponent } from '@iptvnator/portal/shared/ui';
 import {
-    ArtPlayerComponent,
     AudioPlayerComponent,
-    HtmlVideoPlayerComponent,
+    type PlaybackFallbackRequest,
     SidebarComponent,
-    VjsPlayerComponent,
+    WebPlayerViewComponent,
 } from '@iptvnator/ui/playback';
-import { ChannelListLoadingStateComponent } from 'components';
-import { DataService, PlaylistsService, SettingsStore } from 'services';
+import {
+    LiveEpgPanelComponent,
+    LiveEpgPanelSummary,
+} from '@iptvnator/ui/shared-portals';
+import { ChannelListLoadingStateComponent } from '@iptvnator/ui/components';
+import {
+    DataService,
+    PlaylistsService,
+    RuntimeCapabilitiesService,
+    SettingsStore,
+} from '@iptvnator/services';
 import {
     Channel,
+    createDevLogger,
     EpgProgram,
     ExternalPlayerSession,
+    OPEN_MPV_PLAYER,
+    OPEN_VLC_PLAYER,
     PLAYLIST_PARSE_BY_URL,
     M3uRecentlyViewedItem,
     PlaylistMeta,
+    ResolvedPortalPlayback,
     STORE_KEY,
     Settings,
     VideoPlayer,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
+import { createM3uChannelPlaybackRequest } from './m3u-channel-playback-actions';
 
 const M3U_MULTI_EPG_HEADER_ACTION_ID = 'm3u-multi-epg';
 const M3U_SIDEBAR_STORAGE_KEY = 'm3u-sidebar-width';
@@ -86,18 +110,20 @@ const M3U_SIDEBAR_DEFAULT_WIDTH = 460;
 @Component({
     selector: 'app-video-player',
     imports: [
-        ArtPlayerComponent,
         AsyncPipe,
         AudioPlayerComponent,
         ChannelListLoadingStateComponent,
         CommonModule,
         EpgListComponent,
-        HtmlVideoPlayerComponent,
+        LiveEpgPanelComponent,
+        MatButtonModule,
+        MatIconModule,
+        MatTooltipModule,
         PortalEmptyStateComponent,
         ResizableDirective,
         SidebarComponent,
         TranslatePipe,
-        VjsPlayerComponent,
+        WebPlayerViewComponent,
     ],
     templateUrl: './video-player.component.html',
     styleUrl: './video-player.component.scss',
@@ -109,6 +135,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
     private readonly playlistsService = inject(PlaylistsService);
     private readonly playlistContext = inject(PlaylistContextFacade);
     private readonly router = inject(Router);
+    private readonly runtime = inject(RuntimeCapabilitiesService);
     private readonly settingsStore = inject(SettingsStore);
     private readonly storage = inject(StorageMap);
     private readonly store = inject(Store);
@@ -116,6 +143,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
     private readonly workspaceHeaderContext = inject(
         WorkspaceHeaderContextService
     );
+    private readonly debugLog = createDevLogger('VideoPlayerComponent');
 
     /** Active selected channel */
     readonly activeChannel = this.store.selectSignal(selectActive);
@@ -145,6 +173,40 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
             epgParams: '',
         } as Channel;
     });
+    readonly embeddedPlayback = computed<ResolvedPortalPlayback | null>(() => {
+        const activeChannel = this.activeChannel();
+        const playbackTarget = this.playbackChannel();
+
+        if (!activeChannel || !playbackTarget) {
+            return null;
+        }
+
+        const http: Partial<Channel['http']> = playbackTarget.http ?? {};
+        const headers: Record<string, string> = {};
+        if (http['user-agent']) {
+            headers['User-Agent'] = http['user-agent'];
+        }
+        if (http.referrer) {
+            headers['Referer'] = http.referrer;
+        }
+        if (http.origin) {
+            headers['Origin'] = http.origin;
+        }
+
+        return {
+            streamUrl: `${playbackTarget.url}${playbackTarget.epgParams ?? ''}`,
+            title:
+                activeChannel.name?.trim() ||
+                activeChannel.tvg?.name ||
+                playbackTarget.url,
+            thumbnail: activeChannel.tvg?.logo ?? null,
+            isLive: true,
+            headers: Object.keys(headers).length > 0 ? headers : undefined,
+            userAgent: http['user-agent'] || undefined,
+            referer: http.referrer || undefined,
+            origin: http.origin || undefined,
+        };
+    });
     readonly sidebarStorageKey = computed(() =>
         this.activeView() === 'groups'
             ? M3U_GROUPS_SIDEBAR_STORAGE_KEY
@@ -153,6 +215,19 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
     readonly sidebarWidth = signal(M3U_SIDEBAR_DEFAULT_WIDTH);
     readonly sidebarMinWidth = M3U_SIDEBAR_MIN_WIDTH;
     readonly sidebarMaxWidth = M3U_SIDEBAR_MAX_WIDTH;
+    readonly liveEpgPanelState = signal<LiveEpgPanelState>(
+        restoreLiveEpgPanelState()
+    );
+    readonly selectedLiveEpgDate = signal(getTodayEpgDateKey());
+    readonly isLiveEpgPanelCollapsed = computed(
+        () => this.liveEpgPanelState() === 'collapsed'
+    );
+    readonly liveSidebarState = signal<LiveSidebarState>(
+        restoreLiveSidebarState()
+    );
+    readonly isSidebarCollapsed = computed(
+        () => this.liveSidebarState() === 'collapsed'
+    );
 
     /** Channels list */
     readonly channels$: Observable<Channel[]> = this.store.select(
@@ -161,6 +236,9 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
 
     /** Current epg program */
     readonly epgProgram = this.store.selectSignal(selectCurrentEpgProgram);
+    readonly liveEpgPanelSummary = computed(() =>
+        this.toLiveEpgPanelSummary(this.epgProgram())
+    );
 
     /** Active M3U view (all, groups, favorites, recent) */
     readonly activeView = toSignal(
@@ -176,7 +254,8 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
         showCaptions: false,
     };
 
-    readonly isDesktop = !!window['electron'];
+    readonly isDesktop = this.runtime.isElectron;
+    readonly supportsEpg = this.runtime.supportsEpg;
     readonly isWorkspaceLayout = isWorkspaceLayoutRoute(this.activatedRoute);
 
     /** EPG overlay reference */
@@ -306,8 +385,9 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
         this.registerHeaderShortcut();
 
         // Setup remote control channel change listener (Electron only)
-        if (this.isDesktop && window.electron?.onChannelChange) {
-            const unsubscribe = window.electron.onChannelChange(
+        const remoteControl = this.remoteControlBridge;
+        if (remoteControl?.onChannelChange) {
+            const unsubscribe = remoteControl.onChannelChange(
                 (data: { direction: 'up' | 'down' }) => {
                     this.handleRemoteChannelChange(data.direction);
                 }
@@ -316,8 +396,8 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
                 this.unsubscribeRemoteChannelChange = unsubscribe;
             }
         }
-        if (this.isDesktop && window.electron?.onRemoteControlCommand) {
-            const unsubscribe = window.electron.onRemoteControlCommand(
+        if (remoteControl?.onRemoteControlCommand) {
+            const unsubscribe = remoteControl.onRemoteControlCommand(
                 (command) => {
                     this.handleRemoteControlCommand(command);
                 }
@@ -332,7 +412,8 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
             this.store.select(selectActive),
             this.store.select(selectCurrentEpgProgram).pipe(startWith(null)),
         ]).subscribe(([channels, activeChannel, epgProgram]) => {
-            if (!window.electron?.updateRemoteControlStatus || !activeChannel) {
+            const remoteControl = this.remoteControlBridge;
+            if (!remoteControl?.updateRemoteControlStatus || !activeChannel) {
                 return;
             }
 
@@ -344,7 +425,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
                 (channel) => channel.url === activeChannel.url
             );
 
-            window.electron.updateRemoteControlStatus({
+            remoteControl.updateRemoteControlStatus({
                 portal: 'm3u',
                 isLiveView: true,
                 channelName: activeChannel.name ?? activeChannel.tvg?.name,
@@ -363,7 +444,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
      * Handle remote control channel change
      */
     handleRemoteChannelChange(direction: 'up' | 'down'): void {
-        console.log(`Remote control: changing channel ${direction}`);
+        this.debugLog('Remote control channel change:', direction);
 
         // Use combineLatest to get both values and take only the first emission
         combineLatest([this.channels$, this.store.select(selectActive)])
@@ -393,9 +474,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
                     }
 
                     this.store.dispatch(
-                        ChannelActions.setActiveChannel({
-                            channel: nextChannel,
-                        })
+                        createM3uChannelPlaybackRequest(nextChannel)
                     );
                 },
                 error: (err) => {
@@ -425,6 +504,30 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
 
     onGroupedSidebarWidthRequestEnded(width: number): void {
         this.persistSidebarWidth(this.sidebarStorageKey(), width);
+    }
+
+    onLiveEpgPanelCollapsedChange(collapsed: boolean): void {
+        const state: LiveEpgPanelState = collapsed ? 'collapsed' : 'expanded';
+        this.liveEpgPanelState.set(state);
+        persistLiveEpgPanelState(state);
+    }
+
+    toggleSidebar(): void {
+        const next: LiveSidebarState = this.isSidebarCollapsed()
+            ? 'expanded'
+            : 'collapsed';
+        this.liveSidebarState.set(next);
+        persistLiveSidebarState(next);
+    }
+
+    onLiveEpgDateNavigation(direction: EpgDateNavigationDirection): void {
+        this.selectedLiveEpgDate.set(
+            shiftEpgDateKey(this.selectedLiveEpgDate(), direction)
+        );
+    }
+
+    onLiveEpgSelectedDateChange(selectedDate: string): void {
+        this.selectedLiveEpgDate.set(selectedDate);
     }
 
     /**
@@ -472,9 +575,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
         );
 
         return this.clampSidebarWidth(
-            Number.isNaN(storedWidth)
-                ? M3U_SIDEBAR_DEFAULT_WIDTH
-                : storedWidth
+            Number.isNaN(storedWidth) ? M3U_SIDEBAR_DEFAULT_WIDTH : storedWidth
         );
     }
 
@@ -522,7 +623,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
                     _id: playlistId,
                     recentlyViewed: updatedPlaylist?.recentlyViewed ?? [],
                 } as PlaylistMeta,
-            }) as any
+            })
         );
     }
 
@@ -548,6 +649,10 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
      * Opens the overlay with multi EPG view
      */
     openMultiEpgView(): void {
+        if (!this.supportsEpg) {
+            return;
+        }
+
         const positionStrategy = this.overlay
             .position()
             .global()
@@ -595,12 +700,22 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
 
     @HostListener('document:keydown', ['$event'])
     handleKeyPress(event: KeyboardEvent): void {
+        if (isTypingInInput(event)) {
+            return;
+        }
+        if (
+            (event.metaKey || event.ctrlKey) &&
+            event.key.toLowerCase() === 'b'
+        ) {
+            event.preventDefault();
+            this.toggleSidebar();
+            return;
+        }
+        if (event.metaKey || event.ctrlKey || event.altKey) {
+            return;
+        }
         // Only handle digit keys (0-9)
         if (event.key >= '0' && event.key <= '9') {
-            // Don't trigger hotkeys when user is typing in input fields
-            if (this.isTypingInInput(event)) {
-                return;
-            }
             event.preventDefault();
             this.handleChannelNumberInput(event.key);
         }
@@ -641,7 +756,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
             .subscribe((channel) => {
                 if (channel) {
                     this.store.dispatch(
-                        ChannelActions.setActiveChannel({ channel })
+                        createM3uChannelPlaybackRequest(channel)
                     );
                 }
             });
@@ -657,19 +772,6 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
             clearTimeout(this.channelNumberTimeout);
             this.channelNumberTimeout = undefined;
         }
-    }
-
-    /**
-     * Check if the user is currently typing in an input or textarea field
-     * @param event Keyboard event
-     * @returns true if the event target is an input or textarea element
-     */
-    private isTypingInInput(event: Event): boolean {
-        const target = event.target;
-        return (
-            target instanceof HTMLInputElement ||
-            target instanceof HTMLTextAreaElement
-        );
     }
 
     private handleRemoteControlCommand(command: {
@@ -707,8 +809,9 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
         }
         localStorage.setItem('volume', String(clamped));
 
-        if (window.electron?.updateRemoteControlStatus) {
-            window.electron.updateRemoteControlStatus({
+        const remoteControl = this.remoteControlBridge;
+        if (remoteControl?.updateRemoteControlStatus) {
+            remoteControl.updateRemoteControlStatus({
                 portal: 'm3u',
                 isLiveView: true,
                 supportsVolume: true,
@@ -718,12 +821,45 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
         }
     }
 
+    private get remoteControlBridge(): Window['electron'] | undefined {
+        return this.runtime.supportsRemoteControl ? window.electron : undefined;
+    }
+
     shouldShowInlinePlayer(channel: Channel | null | undefined): boolean {
         if (!channel) {
             return false;
         }
 
         return !this.isExternalPlayer(this.playerSettings.player);
+    }
+
+    handleExternalFallbackRequest(request: PlaybackFallbackRequest): void {
+        const payload = buildExternalPlayerPayload(
+            this.activeChannel(),
+            request.playback.streamUrl
+        );
+        if (!payload) {
+            return;
+        }
+
+        this.dataService.sendIpcEvent(
+            request.player === 'mpv' ? OPEN_MPV_PLAYER : OPEN_VLC_PLAYER,
+            payload
+        );
+    }
+
+    private toLiveEpgPanelSummary(
+        program: EpgProgram | null | undefined
+    ): LiveEpgPanelSummary | null {
+        if (!program) {
+            return null;
+        }
+
+        return {
+            title: program.title,
+            start: program.start,
+            stop: program.stop,
+        };
     }
 
     private getExternalSessionStateKey(
@@ -749,7 +885,7 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
     }
 
     private registerHeaderShortcut(): void {
-        if (!this.isWorkspaceLayout) {
+        if (!this.isWorkspaceLayout || !this.supportsEpg) {
             return;
         }
 
@@ -758,6 +894,13 @@ export class VideoPlayerComponent implements OnInit, OnDestroy {
             icon: 'view_list',
             tooltipKey: 'TOP_MENU.OPEN_MULTI_EPG',
             ariaLabelKey: 'TOP_MENU.OPEN_MULTI_EPG',
+            palette: {
+                labelKey: 'TOP_MENU.OPEN_MULTI_EPG',
+                descriptionKey:
+                    'WORKSPACE.SHELL.COMMANDS.OPEN_MULTI_EPG_DESCRIPTION',
+                keywords: ['epg', 'guide', 'schedule'],
+                priority: 10,
+            },
             run: () => this.openMultiEpgView(),
         });
     }

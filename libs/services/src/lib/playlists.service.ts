@@ -1,13 +1,11 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import { inject, Injectable } from '@angular/core';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslateService } from '@ngx-translate/core';
-import { parse } from 'iptv-playlist-parser';
 import {
     aggregateFavoriteChannels,
     createFavoritesPlaylist,
     createPlaylistObject,
-} from 'm3u-utils';
+} from '@iptvnator/shared/m3u-utils';
 import { NgxIndexedDBService } from 'ngx-indexed-db';
 import {
     combineLatest,
@@ -30,7 +28,9 @@ import {
     PlaylistUpdateState,
     StalkerPortalItem,
     normalizeStalkerDate,
-} from 'shared-interfaces';
+} from '@iptvnator/shared/interfaces';
+import { PLAYLIST_DELETE_CLEANUP } from './playlist-delete-cleanup.token';
+import { RuntimeCapabilitiesService } from './runtime-capabilities.service';
 
 const SQLITE_PLAYLIST_MIGRATION_FLAG = 'm3u-playlists-indexeddb-to-sqlite-v1';
 const STALKER_PLAYLIST_METADATA_MIGRATION_FLAG =
@@ -61,6 +61,20 @@ type PlaylistStorageWindow = Window & {
     electron?: PlaylistStorageElectronApi;
 };
 
+type PlaylistParserModule = Partial<typeof import('iptv-playlist-parser')> & {
+    default?: Partial<typeof import('iptv-playlist-parser')>;
+};
+
+export function resolvePlaylistParser(parserModule: PlaylistParserModule) {
+    const parse = parserModule.parse ?? parserModule.default?.parse;
+
+    if (!parse) {
+        throw new Error('iptv-playlist-parser parse export was not found');
+    }
+
+    return parse;
+}
+
 @Injectable({
     providedIn: 'root',
 })
@@ -68,6 +82,9 @@ export class PlaylistsService {
     private readonly dbService = inject(NgxIndexedDBService);
     private readonly snackBar = inject(MatSnackBar);
     private readonly translateService = inject(TranslateService);
+    private readonly runtime = inject(RuntimeCapabilitiesService);
+    private readonly playlistDeleteCleanups =
+        inject(PLAYLIST_DELETE_CLEANUP, { optional: true }) ?? [];
     private electronMigrationPromise: Promise<void> | null = null;
     private indexedDbMigrationPromise: Promise<void> | null = null;
 
@@ -80,15 +97,7 @@ export class PlaylistsService {
     }
 
     private get isElectronStorageAvailable(): boolean {
-        const electron = this.electronApi;
-
-        return (
-            !!electron &&
-            typeof electron.dbGetAppPlaylists === 'function' &&
-            typeof electron.dbUpsertAppPlaylist === 'function' &&
-            typeof electron.dbGetAppState === 'function' &&
-            typeof electron.dbSetAppState === 'function'
-        );
+        return this.runtime.supportsSqlite;
     }
 
     private runOnSqlite<T>(operation: () => Promise<T>) {
@@ -129,6 +138,20 @@ export class PlaylistsService {
         }
 
         return this.indexedDbMigrationPromise;
+    }
+
+    private toPlaylistMeta(playlist: Playlist): Playlist {
+        const playlistMeta = { ...playlist };
+        delete playlistMeta.playlist;
+        delete playlistMeta.items;
+        delete playlistMeta.header;
+        return playlistMeta;
+    }
+
+    private toAutoUpdatePlaylistMeta(playlist: Playlist): Playlist {
+        const playlistMeta = this.toPlaylistMeta(playlist);
+        delete playlistMeta.favorites;
+        return playlistMeta;
     }
 
     private async migrateIndexedDbPlaylistsToSqlite(): Promise<void> {
@@ -356,10 +379,8 @@ export class PlaylistsService {
                 const playlists = electron
                     ? await electron.dbGetAppPlaylists()
                     : [];
-                return (playlists as Playlist[]).map(
-                    ({ playlist, items, header, ...rest }) => ({
-                        ...(rest as Playlist),
-                    })
+                return (playlists as Playlist[]).map((playlist) =>
+                    this.toPlaylistMeta(playlist)
                 );
             });
         }
@@ -367,11 +388,7 @@ export class PlaylistsService {
         return this.runOnIndexedDb(() =>
             firstValueFrom(this.dbService.getAll<Playlist>(DbStores.Playlists))
         ).pipe(
-            map((data) =>
-                data.map(({ playlist, items, header, ...rest }) => ({
-                    ...(rest as Playlist),
-                }))
-            )
+            map((data) => data.map((playlist) => this.toPlaylistMeta(playlist)))
         );
     }
 
@@ -393,21 +410,48 @@ export class PlaylistsService {
     }
 
     deletePlaylist(playlistId: string): Observable<{ success: boolean }> {
-        if (this.isElectronStorageAvailable) {
-            return this.runOnSqlite(async () => {
-                const electron = this.electronApi;
-                if (!electron) {
-                    return undefined;
-                }
+        const delete$: Observable<unknown> = this.isElectronStorageAvailable
+            ? this.runOnSqlite(async () => {
+                  const electron = this.electronApi;
+                  if (!electron) {
+                      return undefined;
+                  }
 
-                await electron.dbDeletePlaylist(playlistId);
-                return undefined;
-            }).pipe(map(() => ({ success: true })));
+                  await electron.dbDeletePlaylist(playlistId);
+                  return undefined;
+              })
+            : this.dbService.delete(DbStores.Playlists, playlistId);
+
+        return delete$.pipe(
+            switchMap(() => from(this.runPlaylistDeleteCleanups(playlistId))),
+            map(() => ({ success: true }))
+        );
+    }
+
+    private async runPlaylistDeleteCleanups(playlistId: string): Promise<void> {
+        if (this.playlistDeleteCleanups.length === 0) {
+            return;
         }
 
-        return this.dbService
-            .delete(DbStores.Playlists, playlistId)
-            .pipe(map(() => ({ success: true })));
+        const failures = (
+            await Promise.all(
+                this.playlistDeleteCleanups.map(async (cleanup) => {
+                    try {
+                        await cleanup(playlistId);
+                        return null;
+                    } catch (error) {
+                        return error;
+                    }
+                })
+            )
+        ).filter((error) => error !== null);
+
+        for (const failure of failures) {
+            console.warn(
+                'Playlist cleanup failed after playlist deletion:',
+                failure
+            );
+        }
     }
 
     updatePlaylist(playlistId: string, updatedPlaylist: Playlist) {
@@ -423,6 +467,9 @@ export class PlaylistsService {
                     updateDate: Date.now(),
                     updateState: PlaylistUpdateState.UPDATED,
                     favorites: currentPlaylist.favorites,
+                    autoRefresh:
+                        currentPlaylist.autoRefresh ??
+                        updatedPlaylist.autoRefresh,
                 };
 
                 if (this.isElectronStorageAvailable) {
@@ -451,7 +498,9 @@ export class PlaylistsService {
         }
 
         return this.runOnIndexedDb(() =>
-            firstValueFrom(this.dbService.getByID<Playlist>(DbStores.Playlists, id))
+            firstValueFrom(
+                this.dbService.getByID<Playlist>(DbStores.Playlists, id)
+            )
         );
     }
 
@@ -469,11 +518,23 @@ export class PlaylistsService {
                     ...(updatedPlaylist.userAgent != null
                         ? { userAgent: updatedPlaylist.userAgent }
                         : {}),
+                    ...(updatedPlaylist.referrer !== undefined
+                        ? { referrer: updatedPlaylist.referrer }
+                        : {}),
+                    ...(updatedPlaylist.origin !== undefined
+                        ? { origin: updatedPlaylist.origin }
+                        : {}),
                     ...(updatedPlaylist.serverUrl != null
                         ? { serverUrl: updatedPlaylist.serverUrl }
                         : {}),
                     ...(updatedPlaylist.portalUrl != null
                         ? { portalUrl: updatedPlaylist.portalUrl }
+                        : {}),
+                    ...(updatedPlaylist.isFullStalkerPortal !== undefined
+                        ? {
+                              isFullStalkerPortal:
+                                  updatedPlaylist.isFullStalkerPortal,
+                          }
                         : {}),
                     ...(updatedPlaylist.macAddress != null
                         ? { macAddress: updatedPlaylist.macAddress }
@@ -746,13 +807,18 @@ export class PlaylistsService {
         );
     }
 
-    handlePlaylistParsing(
+    async handlePlaylistParsing(
         uploadType: 'FILE' | 'URL' | 'TEXT',
         playlist: string,
         title: string,
         path?: string
     ) {
         try {
+            // Dynamic import keeps the ~130KB validator dep (transitively pulled
+            // by iptv-playlist-parser) out of the eager bundle. parse() only runs
+            // on user-triggered imports.
+            const parserModule = await import('iptv-playlist-parser');
+            const parse = resolvePlaylistParser(parserModule);
             const parsedPlaylist = parse(playlist);
             return createPlaylistObject(
                 title,
@@ -796,15 +862,7 @@ export class PlaylistsService {
             map((playlists: Playlist[]) => {
                 return playlists
                     .filter((item) => item.autoRefresh)
-                    .map(
-                        ({
-                            playlist,
-                            header,
-                            items,
-                            favorites,
-                            ...rest
-                        }: Playlist) => rest
-                    );
+                    .map((playlist) => this.toAutoUpdatePlaylistMeta(playlist));
             })
         );
     }
@@ -879,7 +937,9 @@ export class PlaylistsService {
         return raw.includes(':') ? raw.split(':')[0] : raw;
     }
 
-    private getPlaylistRecentIdentity(item: PlaylistRecentlyViewedItem): string {
+    private getPlaylistRecentIdentity(
+        item: PlaylistRecentlyViewedItem
+    ): string {
         if (isM3uRecentlyViewedItem(item)) {
             return String(item.url ?? item.id ?? '').trim();
         }
@@ -994,9 +1054,44 @@ export class PlaylistsService {
                         playlist.recentlyViewed as PlaylistRecentlyViewedItem[]
                     )?.filter(
                         (item) =>
-                            !this.matchesPlaylistRecentIdentity(
-                                item,
-                                identity
+                            !this.matchesPlaylistRecentIdentity(item, identity)
+                    ),
+                };
+
+                if (this.isElectronStorageAvailable) {
+                    return this.upsertSqlitePlaylist(nextPlaylist);
+                }
+
+                return this.dbService.update(DbStores.Playlists, nextPlaylist);
+            })
+        );
+    }
+
+    removeFromPlaylistRecentlyViewedBatch(
+        playlistId: string,
+        identities: ReadonlyArray<string | number>
+    ) {
+        if (!playlistId) {
+            throw new Error('Playlist ID is required');
+        }
+
+        if (identities.length === 0) {
+            return this.getPlaylistById(playlistId);
+        }
+
+        return this.getPlaylistById(playlistId).pipe(
+            switchMap((playlist) => {
+                const nextPlaylist: Playlist = {
+                    ...playlist,
+                    recentlyViewed: (
+                        playlist.recentlyViewed as PlaylistRecentlyViewedItem[]
+                    )?.filter(
+                        (item) =>
+                            !identities.some((identity) =>
+                                this.matchesPlaylistRecentIdentity(
+                                    item,
+                                    identity
+                                )
                             )
                     ),
                 };
